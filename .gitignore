@@ -1,0 +1,21 @@
+# 依赖与构建产物
+node_modules/
+main.js
+main.js.map
+
+# 单元测试的临时打包产物
+.test-build/
+
+# 含真实 API Token 的用户数据，严禁入库
+data.json
+
+# 复刻参照用的打包产物备份
+main.js.orig
+
+# 提取脚本与中间产物
+.zcode/
+main.decoded.txt
+
+# 系统
+.DS_Store
+Thumbs.db

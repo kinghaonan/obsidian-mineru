@@ -1,0 +1,67 @@
+/* obsidian-mineru 插件样式 */
+
+.mineru-wizard .setting-item {
+  border-top: none;
+}
+
+.mineru-progress-list {
+  margin: 8px 0;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.mineru-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: var(--font-ui-small);
+}
+
+.mineru-progress-state {
+  min-width: 52px;
+  color: var(--text-muted);
+}
+
+.mineru-progress-state.done {
+  color: var(--color-green);
+}
+
+.mineru-progress-state.failed {
+  color: var(--color-red);
+}
+
+.mineru-api-test-result {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  white-space: pre-wrap;
+}
+
+/* 侧边栏图标运行状态：转换/翻译运行时在图标右上角显示红点，完成/失败短暂变色 */
+.clickable-icon.mineru-running,
+.clickable-icon.mineru-translating {
+  position: relative;
+}
+.clickable-icon.mineru-running::after,
+.clickable-icon.mineru-translating::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ff3b30;
+  box-shadow: 0 0 4px rgba(255, 59, 48, 0.9);
+  pointer-events: none;
+}
+.clickable-icon.mineru-done {
+  color: var(--color-green);
+}
+.clickable-icon.mineru-failed {
+  color: var(--color-red);
+}

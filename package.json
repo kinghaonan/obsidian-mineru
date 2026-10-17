@@ -1,0 +1,34 @@
+{
+	"name": "obsidian-mineru",
+	"version": "1.0.0",
+	"description": "使用 MinerU 精准解析 API 将 PDF / Word / PPT / Excel / 图片解析为 Markdown，并可配置 OpenAI 兼容或 Anthropic Claude 翻译",
+	"main": "main.js",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"typecheck": "tsc -p tsconfig.test.json --noEmit",
+		"pretest": "node tests/build.mjs",
+		"test": "node --test --test-timeout=30000 \".test-build/*.test.cjs\"",
+		"check:parity": "node scripts/check-parity.mjs",
+		"verify": "npm run typecheck && npm run build && npm test && npm run check:parity"
+	},
+	"keywords": [
+		"obsidian",
+		"mineru",
+		"pdf",
+		"markdown",
+		"translation"
+	],
+	"author": "obsidian-mineru",
+	"license": "MIT",
+	"devDependencies": {
+		"@types/node": "^22.7.5",
+		"builtin-modules": "^4.0.0",
+		"esbuild": "^0.24.0",
+		"obsidian": "latest",
+		"typescript": "^5.6.3"
+	},
+	"dependencies": {
+		"jszip": "^3.10.1"
+	}
+}
