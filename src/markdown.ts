@@ -63,19 +63,53 @@ export function rewriteImageLinks(markdown: string, urlMap: Map<string, string>)
 }
 
 /** 把图片链接转换为居中 HTML（可选宽度与加粗文件名） */
-export function imagesToCenteredHtml(markdown: string, widthPercent: number, showFilename: boolean): string {
+export function imagesToCenteredHtml(
+	markdown: string,
+	widthPercent: number,
+	showFilename: boolean,
+	captions?: Map<string, string>,
+): string {
 	const { text, restore } = protectPlaceholders(markdown, { protectImages: false });
 	const width = Math.max(10, Math.min(100, Math.round(widthPercent)));
 	const replaced = text.replace(IMAGE_LINK_REGEX, (whole, alt: string, url: string) => {
 		const cleanUrl = linkTarget(url);
 		const safeAlt = (alt ?? "").replace(/"/g, "&quot;");
 		const img = `<img src="${cleanUrl}" alt="${safeAlt}" width="${width}%"/>`;
-		if (!showFilename) return `<div style="text-align:center">${img}</div>`;
-		const filename = decodeURIComponent(cleanUrl.split("/").pop() ?? "")
-			.replace(/&/g, "&amp;")
-			.replace(/</g, "&lt;")
-			.replace(/>/g, "&gt;");
-		return `<div style="text-align:center">${img}<br/><strong>${filename}</strong></div>`;
+		const caption = captions?.get(cleanUrl);
+		// 优先展示图注；无图注时回退到文件名（沿用原有行为）
+		const note = caption
+			? `<br/><span class="mineru-figcaption">${escapeHtml(caption)}</span>`
+			: showFilename
+				? `<br/><strong>${displayName(cleanUrl)}</strong>`
+				: "";
+		if (!note) return `<div style="text-align:center">${img}</div>`;
+		return `<div style="text-align:center">${img}${note}</div>`;
 	});
 	return restore(replaced);
+}
+
+/** 文件名（已解码）经 HTML 转义 */
+function displayName(url: string): string {
+	return escapeHtml(decodeURIComponent(url.split("/").pop() ?? ""));
+}
+
+/** HTML 文本转义（图注来自 PDF 文本，需防注入） */
+export function escapeHtml(text: string): string {
+	return text
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;");
+}
+
+/**
+ * 删除原文中已被渲染到 HTML 图注区的行（图注行、子标签行）。
+ * 用行号集合精确删除，避免正则误伤正文。
+ */
+export function dropLines(markdown: string, lines: Set<number>): string {
+	if (lines.size === 0) return markdown;
+	return markdown
+		.split(/\r?\n/)
+		.filter((_, i) => !lines.has(i))
+		.join("\n");
 }

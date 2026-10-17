@@ -45,6 +45,8 @@ export class ConversionWizard extends Modal {
 	private collisionSelect!: DropdownComponent;
 	private splitToggle!: ToggleComponent;
 	private splitPagesInput!: TextComponent;
+	private captionNamingToggle!: ToggleComponent;
+	private showCaptionToggle!: ToggleComponent;
 
 	constructor(app: App, deps: WizardDeps, preselected: TFile[] = []) {
 		super(app);
@@ -139,6 +141,22 @@ export class ConversionWizard extends Modal {
 		const filenameSetting = new Setting(this.contentEl).setName("图片下方显示文件名（加粗）");
 		this.filenameToggle = new ToggleComponent(filenameSetting.controlEl).setValue(settings.showImageFilename);
 
+		new Setting(this.contentEl).setName("图注识别").setHeading();
+
+		const namingSetting = new Setting(this.contentEl)
+			.setName("用图注给图片命名")
+			.setDesc("识别到图注时按「图号-标题」命名图片，如 Fig.1.2-The-cylindrical-coordinate-system.jpg");
+		this.captionNamingToggle = new ToggleComponent(namingSetting.controlEl).setValue(
+			settings.imageCaptionNaming,
+		);
+
+		const showCaptionSetting = new Setting(this.contentEl)
+			.setName("在图下显示图注")
+			.setDesc("识别到图注时显示图注文本（并移除正文中的原图注行），否则显示文件名");
+		this.showCaptionToggle = new ToggleComponent(showCaptionSetting.controlEl).setValue(
+			settings.showFigureCaption,
+		);
+
 		this.progressEl = this.contentEl.createDiv({ cls: "mineru-progress-list" });
 
 		const buttonContainer = this.contentEl.createDiv({ cls: "modal-button-container" });
@@ -192,6 +210,9 @@ export class ConversionWizard extends Modal {
 			imageWidth: this.widthSlider.getValue(),
 			showImageFilename: this.filenameToggle.getValue(),
 			collisionPolicy: this.collisionSelect.getValue() as CollisionPolicy,
+			imageCaptionNaming: this.captionNamingToggle.getValue(),
+			showFigureCaption: this.showCaptionToggle.getValue(),
+			removeCaptionLines: this.showCaptionToggle.getValue(),
 			split: {
 				enabled: this.splitToggle.getValue(),
 				maxPages: Number.isFinite(pages) && pages > 0 ? Math.floor(pages) : settings.autoSplitMaxPages,

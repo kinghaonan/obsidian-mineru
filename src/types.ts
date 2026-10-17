@@ -23,6 +23,12 @@ export interface ConvertOptions {
 	collisionPolicy: CollisionPolicy;
 	/** 大文件切分策略 */
 	split: SplitOptions;
+	/** 是否用图注给图片文件命名（默认 true） */
+	imageCaptionNaming?: boolean;
+	/** 是否在图下渲染图注文本（默认 true） */
+	showFigureCaption?: boolean;
+	/** 是否删除原文中已被渲染的图注行（默认 true） */
+	removeCaptionLines?: boolean;
 }
 
 /** 目标文件冲突策略 */

@@ -62,6 +62,12 @@ export interface PluginSettings {
 	autoSplitMaxPages: number;
 	autoSplitMaxSizeMB: number;
 	splitDedupeTitle: boolean;
+	/** 用图注给图片命名 */
+	imageCaptionNaming: boolean;
+	/** 在图下渲染图注 */
+	showFigureCaption: boolean;
+	/** 删除原文图注行 */
+	removeCaptionLines: boolean;
 
 	/* ---- 扩展：翻译队列 / 进度面板 ---- */
 	/** 批量翻译并发数 */
@@ -108,6 +114,9 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 	autoSplitMaxPages: DEFAULT_SPLIT_PAGES,
 	autoSplitMaxSizeMB: DEFAULT_SPLIT_SIZE_MB,
 	splitDedupeTitle: true,
+	imageCaptionNaming: true,
+	showFigureCaption: true,
+	removeCaptionLines: true,
 	translationConcurrency: DEFAULT_TRANSLATION_CONCURRENCY,
 	autoOpenProgressView: true,
 	showProgressButton: true,
@@ -601,6 +610,40 @@ export class MineruSettingTab extends PluginSettingTab {
 			.addToggle((toggle) => {
 				toggle.setValue(s.splitDedupeTitle).onChange(async (value) => {
 					s.splitDedupeTitle = value;
+					await this.host.saveSettings();
+				});
+			});
+
+		containerEl.createEl("h2", { text: "图注识别" });
+
+		new Setting(containerEl)
+			.setName("用图注给图片命名")
+			.setDesc(
+				"识别到图注时，图片改名为「图号-标题」，如 Fig.1.2-The-cylindrical-coordinate-system.jpg；未识别到的图片保持原名",
+			)
+			.addToggle((toggle) => {
+				toggle.setValue(s.imageCaptionNaming).onChange(async (value) => {
+					s.imageCaptionNaming = value;
+					await this.host.saveSettings();
+				});
+			});
+
+		new Setting(containerEl)
+			.setName("在图下显示图注")
+			.setDesc("识别到图注时用图注文本替代文件名显示；未识别到则仍显示文件名")
+			.addToggle((toggle) => {
+				toggle.setValue(s.showFigureCaption).onChange(async (value) => {
+					s.showFigureCaption = value;
+					await this.host.saveSettings();
+				});
+			});
+
+		new Setting(containerEl)
+			.setName("删除原文图注行")
+			.setDesc("图注已渲染到图下方后，删除正文里的原图注行，避免重复显示。关闭后会在图下与正文各显示一次")
+			.addToggle((toggle) => {
+				toggle.setValue(s.removeCaptionLines).onChange(async (value) => {
+					s.removeCaptionLines = value;
 					await this.host.saveSettings();
 				});
 			});

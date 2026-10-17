@@ -139,7 +139,51 @@ npm run check:parity -- --update   # 登记新基线
 | `autoOpenProgressView` | `true` | 任务开始自动展开进度面板 |
 | `showProgressButton` | `true` | 侧边栏显示进度面板按钮 |
 
-### 6.7 图片路径与链接可用性修复
+### 6.7 图注识别与图片命名
+
+**需求**：PDF 图片原名是哈希（`p1_4a2fbc59….jpg`），希望改用图注命名
+（`Fig.1.2-The-cylindrical-coordinate-system.jpg`），并把图注渲染到图下方。
+
+**可行性实测**（`scripts/analyze-captions.mjs`，样本为本项目转换的 317 张图的教材）：
+
+| 情况 | 数量 | 占比 |
+|---|---|---|
+| 紧邻下一行有图注 | 235 | 74.1% |
+| 下两行 | 2 | 0.6% |
+| 子图组合（多图共用图注） | 28 | 8.8% |
+| 真无图注（装饰图/正文跨空行） | 52 | 16.4% |
+
+→ 与预估的 B 档（~85%）一致。
+
+**实现**（`src/mineru/captions.ts`）：
+
+- `analyzeCaptions(markdown)` 返回 `{ captions, subLabels, removableLines }`
+- 识别图注：图注必须在行首匹配 `Fig./Figure/图 + 编号`（支持 `1.2`、`1-2`、`P1.4`、`A1.2`），长度 ≤ 200 字符
+- **防误判的核心规则**：图注必须与至少一张图片**同属一个段落**（中间无空行）；跨空行的多图聚合，
+  仅当图片之间存在子标签行（`c) …`）时才成立。这样「图片 + 空行 + 正文里以 `Figure 3.1 shows…`
+  开头的句子」不会被误判
+- 子图：整组图注挂在组内第一张图上，子标签归属其后那张图（MinerU 的排版是「标签在前、图片在后」，
+  且与上一张图之间常有空行）
+- `captionFileName()` / `subLabelFileName()` 生成文件名，限长 80/70 字符、剔除非法字符；同名自动追加 `-2`、`-3`
+- 渲染：`<span class="mineru-figcaption">Fig. 1.2 …</span>`，图注文本做 HTML 转义；无图注时回退显示文件名
+
+**接入**（`src/mineru/pipeline.ts#writeResult`）：
+
+```
+analyzeCaptions → 按图注定名 → 写盘 → rewriteImageLinks → 删除原文图注行 → imagesToCenteredHtml
+```
+
+设置项：`imageCaptionNaming`（命名，默认开）、`showFigureCaption`（展示，默认开）、
+`removeCaptionLines`（删原行，默认开）。
+
+**回归验证**（`scripts/verify-captions.mjs`，样本同上）：
+
+```
+图片总数 317 → 识别图注 236 (74.4%) + 子图 37 = 重命名 273 (86.1%)
+待删除行 275 条，其中非图注/非子标签的行 0（无误删）
+```
+
+### 6.8 图片路径与链接可用性修复
 
 **问题**：文档名含空格或括号时（如 `Analytical Mechanics of Space Systems (Aiaa Education)`），
 图片目录名被原样拼进 `![](路径)`，Markdown 在第一个空格处截断，**图片全部无法显示**。

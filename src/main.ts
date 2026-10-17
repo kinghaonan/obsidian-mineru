@@ -343,6 +343,9 @@ export default class MineruPlugin extends Plugin {
 			imageWidth: s.imageWidthPercent,
 			showImageFilename: s.showImageFilename,
 			collisionPolicy: s.conversionCollisionPolicy,
+			imageCaptionNaming: s.imageCaptionNaming,
+			showFigureCaption: s.showFigureCaption,
+			removeCaptionLines: s.removeCaptionLines,
 			split: {
 				enabled: s.autoSplitEnabled,
 				maxPages: s.autoSplitMaxPages,

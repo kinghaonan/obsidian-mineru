@@ -10,7 +10,8 @@ import {
 	sanitizeFileName,
 	toArrayBuffer,
 } from "../utils";
-import { imagesToCenteredHtml, rewriteImageLinks } from "../markdown";
+import { imagesToCenteredHtml, rewriteImageLinks, dropLines } from "../markdown";
+import { analyzeCaptions, captionFileName, subLabelFileName, type CaptionAnalysis } from "./captions";
 import type {
 	CancelSignal,
 	ConvertOptions,
@@ -386,6 +387,12 @@ export class ConversionPipeline {
 		let markdown = contents.markdown;
 		let imageCount = 0;
 
+		// 先按图注给图片重新命名，再决定落盘路径
+		const captions = analyzeCaptions(markdown);
+		const renameMap =
+			options.imageCaptionNaming === false ? new Map<string, string>() : buildRenameMap(captions);
+		const urlMap = new Map<string, string>();
+
 		if (options.downloadImages && contents.images.length > 0) {
 			// 目录名要做链接安全化：文档名里的空格/括号会让 ![](路径) 在 Markdown 中截断
 			const defaultFolder = assetFolderName(basename);
@@ -393,23 +400,30 @@ export class ConversionPipeline {
 				options.imageFolder.trim() ? options.imageFolder : `${outDir}/${defaultFolder}`,
 			);
 			await ensureFolderLevels(vault, imageDir);
-			const urlMap = new Map<string, string>();
 			for (const image of contents.images) {
 				const relName = image.relPath.replace(/\\/g, "/");
-				const binPath = normalizePath(`${imageDir}/${relName}`);
+				const renamed = renameMap.get(relName) ?? relName;
+				const binPath = normalizePath(`${imageDir}/${renamed}`);
 				await this.writeBinary(binPath, toArrayBuffer(image.data));
 				// 链接目标做百分号编码，空格/括号等在 Markdown 里才不会被截断
 				const relative = encodeLinkUrl(relativePath(outDir, binPath));
 				urlMap.set(image.relPath, relative);
 				urlMap.set(`images/${image.relPath}`, relative);
 				urlMap.set(relName, relative);
+				urlMap.set(renamed, relative);
 				imageCount++;
 			}
 			markdown = rewriteImageLinks(markdown, urlMap);
 		}
 
+		// 原始图注行已被搬进 HTML 图注区，移除避免重复显示
+		if (options.removeCaptionLines !== false && captions.removableLines.size > 0) {
+			markdown = dropLines(markdown, captions.removableLines);
+		}
+
 		if (options.convertImageToHtml) {
-			markdown = imagesToCenteredHtml(markdown, options.imageWidth, options.showImageFilename);
+			const display = options.showFigureCaption === false ? undefined : captionMap(captions, urlMap);
+			markdown = imagesToCenteredHtml(markdown, options.imageWidth, options.showImageFilename, display);
 		}
 
 		await this.writeText(outputPath, markdown);
@@ -427,4 +441,61 @@ export class ConversionPipeline {
 
 function partLabel(item: StagedItem): string | undefined {
 	return item.partsTotal > 1 ? `${item.partIndex}/${item.partsTotal} 分片` : undefined;
+}
+
+/**
+ * 依据图注生成「原始名 → 新文件名」映射。
+ * 主图用 `Fig.1.2-标题`，子图用 `Fig.1.2-c-标签` / `Fig.1.2-2`。
+ * 同名冲突时追加 `-2`、`-3`。
+ */
+function buildRenameMap(captions: CaptionAnalysis): Map<string, string> {
+	const map = new Map<string, string>();
+	const used = new Set<string>();
+	/** 登记时同时写裸名与 images/ 前缀名，保证两种引用写法都能命中 */
+	const put = (url: string, name: string) => {
+		const unique = uniqueName(name, used);
+		map.set(url, unique);
+		map.set(url.replace(/^images\//, ""), unique);
+	};
+
+	// 子图先占位（短名），主图优先拿到完整名
+	for (const [url, sub] of captions.subLabels) {
+		put(url, subLabelFileName(sub.number, sub.label, 0).replace(/\.jpg$/, ""));
+	}
+	for (const [url, caption] of captions.captions) {
+		const fileName = captionFileName(caption.number, caption.text);
+		if (!fileName) continue;
+		put(url, fileName.replace(/\.jpg$/, ""));
+	}
+	return map;
+}
+
+/** 名字去重：同名时追加 -2/-3… */
+function uniqueName(stem: string, used: Set<string>): string {
+	if (!used.has(stem)) {
+		used.add(stem);
+		return `${stem}.jpg`;
+	}
+	let n = 2;
+	while (used.has(`${stem}-${n}`)) n++;
+	const name = `${stem}-${n}`;
+	used.add(name);
+	return `${name}.jpg`;
+}
+
+/**
+ * 图注 URL → 展示文本（供 HTML 图注区使用）。
+ * 需要用 urlMap 把「原始 URL」翻译成「最终链接」，否则图片改写后匹配不上。
+ */
+function captionMap(captions: CaptionAnalysis, urlMap: Map<string, string>): Map<string, string> {
+	const map = new Map<string, string>();
+	const resolve = (url: string) => urlMap.get(url) ?? urlMap.get(`images/${url}`) ?? url;
+
+	for (const [url, caption] of captions.captions) {
+		map.set(resolve(url), `Fig. ${caption.number} ${caption.text}`);
+	}
+	for (const [url, sub] of captions.subLabels) {
+		map.set(resolve(url), sub.label);
+	}
+	return map;
 }
