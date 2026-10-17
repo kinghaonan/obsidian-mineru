@@ -141,8 +141,53 @@ export class Component {
 	onunload(): void {}
 }
 
+/** 够用的 HTMLElement 替身：记录类名与属性，便于断言 ribbon 状态 */
+export class StubElement {
+	classes = new Set<string>();
+	attrs: Record<string, string> = {};
+	textContent = "";
+	removed = false;
+
+	constructor(public tag = "div") {}
+	toggleClass(cls: string, on: boolean): this {
+		if (on) this.classes.add(cls);
+		else this.classes.delete(cls);
+		return this;
+	}
+	addClass(...cls: string[]): this {
+		for (const c of cls) this.classes.add(c);
+		return this;
+	}
+	removeClass(...cls: string[]): this {
+		for (const c of cls) this.classes.delete(c);
+		return this;
+	}
+	setAttribute(key: string, value: string): void {
+		this.attrs[key] = value;
+	}
+	removeAttribute(key: string): void {
+		delete this.attrs[key];
+	}
+	setText(value: string): void {
+		this.textContent = value;
+	}
+	remove(): void {
+		this.removed = true;
+	}
+	querySelector(): StubElement | null {
+		return null;
+	}
+}
+
 export class Plugin extends Component {
 	app: unknown;
+	commands: { id: string; name: string; callback?: () => void; checkCallback?: (c: boolean) => boolean }[] =
+		[];
+	ribbons: StubElement[] = [];
+	settingsTabs: unknown[] = [];
+	views: Map<string, (leaf: unknown) => unknown> = new Map();
+	events: unknown[] = [];
+
 	constructor(app?: unknown) {
 		super();
 		this.app = app;
@@ -153,14 +198,23 @@ export class Plugin extends Component {
 	saveData(): Promise<void> {
 		return Promise.resolve();
 	}
-	addRibbonIcon(): HTMLElement {
-		return {} as HTMLElement;
+	addRibbonIcon(_icon: string, _title: string, _cb: () => void): StubElement {
+		const el = new StubElement("a");
+		this.ribbons.push(el);
+		return el;
 	}
-	addCommand(): unknown {
-		return {};
+	addCommand(cmd: { id: string; name: string }): void {
+		this.commands.push(cmd);
 	}
-	addSettingTab(): void {}
-	registerEvent(): void {}
+	addSettingTab(tab: unknown): void {
+		this.settingsTabs.push(tab);
+	}
+	registerView(type: string, factory: (leaf: unknown) => unknown): void {
+		this.views.set(type, factory);
+	}
+	registerEvent(_ref: unknown): void {
+		this.events.push(_ref);
+	}
 }
 
 export class PluginSettingTab {
@@ -314,6 +368,7 @@ export class FuzzySuggestModal<T> extends Modal {
 	constructor(app: unknown) {
 		super(app);
 	}
+	setPlaceholder(_text: string): void {}
 	getItems(): T[] {
 		return [];
 	}
@@ -321,4 +376,42 @@ export class FuzzySuggestModal<T> extends Modal {
 		return "";
 	}
 	onChooseItem(_item: T): void {}
+}
+
+export class SuggestModal<T> extends Modal {
+	placeholder = "";
+	modalEl: any = new StubElement();
+	constructor(app: unknown) {
+		super(app);
+	}
+	setPlaceholder(text: string): void {
+		this.placeholder = text;
+	}
+	getSuggestions(_query: string): T[] {
+		return [];
+	}
+	renderSuggestion(_item: T, _el: HTMLElement): void {}
+	onChooseSuggestion(_item: T, _evt: MouseEvent | KeyboardEvent): void {}
+}
+
+export class ItemView extends Component {
+	containerEl: any = { children: [new StubElement(), new StubElement()] };
+	contentEl: any = new StubElement();
+	leaf: unknown;
+	constructor(leaf?: unknown) {
+		super();
+		this.leaf = leaf;
+	}
+	getViewType(): string {
+		return "";
+	}
+	getDisplayText(): string {
+		return "";
+	}
+	getIcon(): string {
+		return "";
+	}
+	async onOpen(): Promise<void> {}
+	async onClose(): Promise<void> {}
+	async onUnload(): Promise<void> {}
 }

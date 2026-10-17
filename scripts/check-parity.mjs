@@ -9,19 +9,25 @@
  *
  * 用法：
  *   node scripts/check-parity.mjs            # 对比 main.js.orig 与 main.js
- *   node scripts/check-parity.mjs --strict   # 存在差异即退出码 1
+ *   node scripts/check-parity.mjs --strict   # 出现基线之外的新增文案也判失败
+ *   node scripts/check-parity.mjs --update   # 把当前新增文案写入基线
+ *
+ * 基线文件 scripts/parity-baseline.json 记录「复刻后有意新增」的文案
+ * （如失败重试、批量翻译队列、进度面板、大文件切分等新功能）。
  *
  * 说明：main.js.orig 是复刻参照物，已被 .gitignore 排除；
- *      文件不存在时脚本会提示并以 0 退出，保证 CI/新克隆仓库可用。
+ *      文件不存在时脚本会提示并以 0 退出，保证新克隆仓库可用。
  */
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ORIG = path.join(root, "main.js.orig");
 const NEW = path.join(root, "main.js");
+const BASELINE = path.join(root, "scripts", "parity-baseline.json");
 const strict = process.argv.includes("--strict");
+const update = process.argv.includes("--update");
 
 /** 反转义 \uXXXX，便于直接比对中文字面量 */
 const decode = (file) =>
@@ -126,6 +132,14 @@ const CRITICAL = [
 
 const missingCjk = [...origCjk].filter((s) => !newText.includes(s));
 const missingCritical = CRITICAL.filter((s) => !newText.includes(s));
+const added = [...newCjk].filter((s) => !origText.includes(s));
+
+/** 基线：已登记的新增文案 */
+const baseline = existsSync(BASELINE)
+	? JSON.parse(readFileSync(BASELINE, "utf8")).addedStrings ?? []
+	: [];
+const knownAdded = added.filter((s) => baseline.includes(s));
+const unexpectedAdded = added.filter((s) => !baseline.includes(s));
 
 console.log(`原始产物中文字面量：${origCjk.size} 项`);
 console.log(`当前产物中文字面量：${newCjk.size} 项`);
@@ -145,13 +159,29 @@ if (missingCritical.length > 0) {
 	for (const s of missingCritical) console.log(`   ${JSON.stringify(s)}`);
 }
 
-const added = [...newCjk].filter((s) => !origText.includes(s));
-if (added.length > 0) {
-	console.log(`\n${strict ? "✗" : "ℹ"} 当前产物新增的中文文案（${added.length}${strict ? "，--strict 模式下视为失败" : "，复刻允许的增量"}）：`);
-	for (const s of added) console.log(`   ${JSON.stringify(s)}`);
+if (unexpectedAdded.length > 0) {
+	console.log(
+		`\n${strict ? "✗" : "⚠"} 基线之外的新增中文文案（${unexpectedAdded.length}）：`,
+	);
+	for (const s of unexpectedAdded) console.log(`   ${JSON.stringify(s)}`);
+	console.log(`   如为有意新增功能，运行 npm run check:parity -- --update 登记基线。`);
+	if (strict) failed = true;
 }
 
-if (failed || (strict && added.length > 0)) {
+if (knownAdded.length > 0) {
+	console.log(`\nℹ 已登记的新增文案（${knownAdded.length}，新功能引入，可忽略）。`);
+}
+
+if (update) {
+	writeFileSync(
+		BASELINE,
+		JSON.stringify({ addedStrings: [...baseline, ...added].sort() }, null, 2) + "\n",
+		"utf8",
+	);
+	console.log(`\n已写入基线：${BASELINE}（共 ${[...baseline, ...added].length} 条）`);
+}
+
+if (failed) {
 	console.log("\n结论：与原始产物存在差异，请复核后重试。");
 	process.exit(1);
 }

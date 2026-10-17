@@ -17,6 +17,7 @@ export interface MemoryVault {
 	create(path: string, content: string): Promise<TFile>;
 	createBinary(path: string, data: ArrayBuffer): Promise<TFile>;
 	modify(file: TFile, content: string): Promise<void>;
+	modifyBinary(file: TFile, data: ArrayBuffer): Promise<void>;
 	createFolder(path: string): Promise<void>;
 	getAbstractFileByPath(path: string): TFile | TFolder | null;
 	getFiles(): TFile[];
@@ -82,6 +83,12 @@ export function createVault(): MemoryVault {
 			const hit = entries.get(normalizePath(file.path));
 			if (!hit) throw new Error(`文件不存在：${file.path}`);
 			hit.data = enc.encode(content);
+		},
+
+		async modifyBinary(file, data) {
+			const hit = entries.get(normalizePath(file.path));
+			if (!hit) throw new Error(`文件不存在：${file.path}`);
+			hit.data = new Uint8Array(data);
 		},
 
 		async createFolder(path) {

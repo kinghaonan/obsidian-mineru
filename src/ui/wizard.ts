@@ -1,4 +1,4 @@
-import {
+﻿import {
 	ButtonComponent,
 	Modal,
 	Notice,
@@ -6,11 +6,12 @@ import {
 	SliderComponent,
 	TextComponent,
 	ToggleComponent,
+	DropdownComponent,
 	App,
 	TFile,
 } from "obsidian";
-import { WIZARD_EXTRA_FORMATS } from "../constants";
-import type { ConvertOptions, FileProgress, ManagerState } from "../types";
+import { COLLISION_POLICIES, WIZARD_EXTRA_FORMATS } from "../constants";
+import type { CollisionPolicy, ConvertOptions, FileProgress, ManagerState } from "../types";
 import type { ConversionPipeline } from "../mineru/pipeline";
 import type { ConversionManager } from "./manager";
 import type { PluginSettings } from "../settings";
@@ -33,6 +34,17 @@ export class ConversionWizard extends Modal {
 	private progressEl!: HTMLElement;
 	private cancelBtn!: ButtonComponent;
 	private startBtn!: ButtonComponent;
+	private retryBtn!: ButtonComponent;
+	private outputInput!: TextComponent;
+	private formatToggles: ToggleComponent[] = [];
+	private downloadToggle!: ToggleComponent;
+	private imageFolderInput!: TextComponent;
+	private htmlToggle!: ToggleComponent;
+	private widthSlider!: SliderComponent;
+	private filenameToggle!: ToggleComponent;
+	private collisionSelect!: DropdownComponent;
+	private splitToggle!: ToggleComponent;
+	private splitPagesInput!: TextComponent;
 
 	constructor(app: App, deps: WizardDeps, preselected: TFile[] = []) {
 		super(app);
@@ -67,37 +79,56 @@ export class ConversionWizard extends Modal {
 		const outputSetting = new Setting(this.contentEl)
 			.setName("输出文件夹")
 			.setDesc("库内文件夹，转换结果写入该目录（可每次修改）");
-		const outputInput = new TextComponent(outputSetting.controlEl)
+		this.outputInput = new TextComponent(outputSetting.controlEl)
 			.setPlaceholder("例如：MinerU转换")
 			.setValue(settings.outputFolder);
 
-		const formatToggles: ToggleComponent[] = [];
+		const collisionSetting = new Setting(this.contentEl)
+			.setName("同名文件处理")
+			.setDesc("目标 Markdown 已存在时的行为");
+		this.collisionSelect = new DropdownComponent(collisionSetting.controlEl);
+		for (const policy of COLLISION_POLICIES) this.collisionSelect.addOption(policy.key, policy.label);
+		this.collisionSelect.setValue(settings.conversionCollisionPolicy);
+
 		for (const format of WIZARD_EXTRA_FORMATS) {
 			const formatSetting = new Setting(this.contentEl).setName(format.label);
-			const toggle = new ToggleComponent(formatSetting.controlEl).setValue(
-				settings.extraFormats.includes(format.key),
+			this.formatToggles.push(
+				new ToggleComponent(formatSetting.controlEl).setValue(settings.extraFormats.includes(format.key)),
 			);
-			formatToggles.push(toggle);
 		}
+
+		new Setting(this.contentEl).setName("大文件处理").setHeading();
+
+		const splitSetting = new Setting(this.contentEl)
+			.setName("自动切分并合并")
+			.setDesc("PDF 页数或体积超过 MinerU 上限时，自动切成多个分片批量上传，再按顺序合并回一篇 Markdown");
+		this.splitToggle = new ToggleComponent(splitSetting.controlEl).setValue(settings.autoSplitEnabled);
+
+		const splitPagesSetting = new Setting(this.contentEl)
+			.setName("每个分片页数上限")
+			.setDesc("MinerU 单次解析上限 200 页，建议留出余量（默认 80）");
+		this.splitPagesInput = new TextComponent(splitPagesSetting.controlEl)
+			.setPlaceholder("80")
+			.setValue(String(settings.autoSplitMaxPages));
 
 		new Setting(this.contentEl).setName("图片处理").setHeading();
 
 		const downloadSetting = new Setting(this.contentEl).setName("下载图片到库中");
-		const downloadToggle = new ToggleComponent(downloadSetting.controlEl).setValue(settings.downloadImages);
+		this.downloadToggle = new ToggleComponent(downloadSetting.controlEl).setValue(settings.downloadImages);
 
 		const imageFolderSetting = new Setting(this.contentEl)
 			.setName("图片保存文件夹")
 			.setDesc("留空则自动保存为：{输出文件夹}/{文件名}.assets");
-		const imageFolderInput = new TextComponent(imageFolderSetting.controlEl)
+		this.imageFolderInput = new TextComponent(imageFolderSetting.controlEl)
 			.setPlaceholder("留空自动生成")
 			.setValue(settings.imageFolder);
 
 		const htmlSetting = new Setting(this.contentEl).setName("图片居中显示并设置宽度");
-		const htmlToggle = new ToggleComponent(htmlSetting.controlEl).setValue(settings.convertImageToHtml);
+		this.htmlToggle = new ToggleComponent(htmlSetting.controlEl).setValue(settings.convertImageToHtml);
 
 		const widthSetting = new Setting(this.contentEl).setName("图片宽度");
 		const widthLabel = widthSetting.nameEl.createSpan();
-		const widthSlider = new SliderComponent(widthSetting.controlEl)
+		this.widthSlider = new SliderComponent(widthSetting.controlEl)
 			.setLimits(10, 100, 5)
 			.setValue(settings.imageWidthPercent)
 			.onChange((value) => {
@@ -106,7 +137,7 @@ export class ConversionWizard extends Modal {
 		widthLabel.setText(` ${settings.imageWidthPercent}%`);
 
 		const filenameSetting = new Setting(this.contentEl).setName("图片下方显示文件名（加粗）");
-		const filenameToggle = new ToggleComponent(filenameSetting.controlEl).setValue(settings.showImageFilename);
+		this.filenameToggle = new ToggleComponent(filenameSetting.controlEl).setValue(settings.showImageFilename);
 
 		this.progressEl = this.contentEl.createDiv({ cls: "mineru-progress-list" });
 
@@ -119,11 +150,15 @@ export class ConversionWizard extends Modal {
 				this.close();
 			}
 		});
+		this.retryBtn = new ButtonComponent(buttonContainer)
+			.setButtonText("重试失败项")
+			.onClick(() => void this.retryFailed());
+		this.retryBtn.buttonEl.toggleClass("mineru-disabled", !this.deps.manager.canRetry);
 		this.startBtn = new ButtonComponent(buttonContainer)
 			.setButtonText("开始转换")
 			.setCta()
 			.onClick(() => {
-				this.startConversion(outputInput, formatToggles, downloadToggle, imageFolderInput, htmlToggle, widthSlider, filenameToggle);
+				void this.startConversion();
 			});
 
 		this.unsubscribe = this.deps.manager.onStateChange((state) => this.renderState(state));
@@ -131,17 +166,42 @@ export class ConversionWizard extends Modal {
 
 	onClose(): void {
 		this.unsubscribe?.();
+		this.unsubscribe = null;
 	}
 
-	private async startConversion(
-		outputInput: TextComponent,
-		formatToggles: ToggleComponent[],
-		downloadToggle: ToggleComponent,
-		imageFolderInput: TextComponent,
-		htmlToggle: ToggleComponent,
-		widthSlider: SliderComponent,
-		filenameToggle: ToggleComponent,
-	): Promise<void> {
+	/** 读取向导当前设置并构造转换选项 */
+	private buildOptions(): ConvertOptions {
+		const settings = this.deps.getSettings();
+		const extraFormats = WIZARD_EXTRA_FORMATS.filter(
+			(_format, i) => this.formatToggles[i]?.getValue(),
+		).map((format) => format.key);
+		const pages = Number(this.splitPagesInput.getValue());
+		return {
+			outputFolder: this.outputInput.getValue().trim() || settings.outputFolder,
+			params: {
+				modelVersion: settings.parseModel,
+				isOcr: settings.isOcr,
+				enableFormula: settings.enableFormula,
+				enableTable: settings.enableTable,
+				language: settings.language,
+				extraFormats,
+			},
+			downloadImages: this.downloadToggle.getValue(),
+			imageFolder: this.imageFolderInput.getValue().trim(),
+			convertImageToHtml: this.htmlToggle.getValue(),
+			imageWidth: this.widthSlider.getValue(),
+			showImageFilename: this.filenameToggle.getValue(),
+			collisionPolicy: this.collisionSelect.getValue() as CollisionPolicy,
+			split: {
+				enabled: this.splitToggle.getValue(),
+				maxPages: Number.isFinite(pages) && pages > 0 ? Math.floor(pages) : settings.autoSplitMaxPages,
+				maxSizeMB: settings.autoSplitMaxSizeMB,
+				dedupeTitle: settings.splitDedupeTitle,
+			},
+		};
+	}
+
+	private async startConversion(): Promise<void> {
 		if (this.deps.manager.isRunning) {
 			new Notice("已有转换任务正在进行，请等待完成或先取消");
 			return;
@@ -154,28 +214,14 @@ export class ConversionWizard extends Modal {
 			new Notice("请先在设置中配置 MinerU API Token");
 			return;
 		}
-		const settings = this.deps.getSettings();
-		const extraFormats = WIZARD_EXTRA_FORMATS.filter((f, i) => formatToggles[i].getValue()).map((f) => f.key);
-		const options: ConvertOptions = {
-			outputFolder: outputInput.getValue().trim() || settings.outputFolder,
-			params: {
-				modelVersion: settings.parseModel,
-				isOcr: settings.isOcr,
-				enableFormula: settings.enableFormula,
-				enableTable: settings.enableTable,
-				language: settings.language,
-				extraFormats,
-			},
-			downloadImages: downloadToggle.getValue(),
-			imageFolder: imageFolderInput.getValue().trim(),
-			convertImageToHtml: htmlToggle.getValue(),
-			imageWidth: widthSlider.getValue(),
-			showImageFilename: filenameToggle.getValue(),
-		};
-		const started = await this.deps.manager.start(this.selectedFiles.slice(), options);
-		if (started === null) {
-			new Notice("已有转换任务正在进行");
-		}
+		const started = await this.deps.manager.start(this.selectedFiles.slice(), this.buildOptions());
+		if (started === null) new Notice("已有转换任务正在进行");
+	}
+
+	private async retryFailed(): Promise<void> {
+		const report = await this.deps.manager.retryFailed();
+		if (report === null) new Notice("没有可重试的失败项");
+		this.renderState(this.deps.manager.state);
 	}
 
 	private renderState(state: ManagerState): void {
@@ -183,6 +229,7 @@ export class ConversionWizard extends Modal {
 			this.startBtn.setDisabled(true);
 			this.startBtn.setButtonText("转换中…");
 			this.cancelBtn.setButtonText("取消");
+			this.retryBtn.buttonEl.toggleClass("mineru-disabled", true);
 			if (state.progress) {
 				for (const progress of state.progress.values()) this.upsertProgress(progress);
 			}
@@ -190,8 +237,12 @@ export class ConversionWizard extends Modal {
 			this.startBtn.setDisabled(false);
 			this.startBtn.setButtonText("开始转换");
 			this.cancelBtn.setButtonText("取消");
+			this.retryBtn.buttonEl.toggleClass("mineru-disabled", !this.deps.manager.canRetry);
 			if (state.status === "done" && state.report) {
-				this.addSummary(`✅ 转换完成：成功 ${state.report.succeeded}，失败 ${state.report.failed}`);
+				this.addSummary(
+					`✅ 转换完成：成功 ${state.report.succeeded}，失败 ${state.report.failed}` +
+						(state.report.skipped > 0 ? `，跳过 ${state.report.skipped}` : ""),
+				);
 			} else if (state.status === "failed") {
 				this.addSummary(`❌ ${state.error ?? "转换失败"}`);
 			}
@@ -199,6 +250,7 @@ export class ConversionWizard extends Modal {
 			this.startBtn.setDisabled(false);
 			this.startBtn.setButtonText("开始转换");
 			this.cancelBtn.setButtonText("取消");
+			this.retryBtn.buttonEl.toggleClass("mineru-disabled", !this.deps.manager.canRetry);
 		}
 	}
 
@@ -244,7 +296,9 @@ export class ConversionWizard extends Modal {
 			stateEl.textContent = label;
 			stateEl.className = "mineru-progress-state " + progress.state;
 		}
-		if (detailEl) detailEl.textContent = progress.detail ?? "";
+		if (detailEl) {
+			detailEl.textContent = [progress.part, progress.detail].filter(Boolean).join(" · ");
+		}
 	}
 
 	private addSummary(text: string): void {

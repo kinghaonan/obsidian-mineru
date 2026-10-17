@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import JSZip from "jszip";
 import { ConversionPipeline } from "../src/mineru/pipeline";
 import { MineruError } from "../src/mineru/errors";
 import type { ConvertOptions, FileProgress } from "../src/types";
 import type { MineruClient } from "../src/mineru/api";
 import { createApp, createVault } from "./helpers/vault";
+import { buildZip, fakeClient, type FakeClientOptions } from "./helpers/fake-client";
 
 const OPTIONS: ConvertOptions = {
 	outputFolder: "MinerU转换",
@@ -22,53 +22,11 @@ const OPTIONS: ConvertOptions = {
 	convertImageToHtml: false,
 	imageWidth: 80,
 	showImageFilename: false,
+	collisionPolicy: "rename",
+	split: { enabled: false, maxPages: 80, maxSizeMB: 100, dedupeTitle: true },
 };
 
-interface FakeClientOptions {
-	/** 第 n 次申请上传地址时额外抛出的错误（用于测试降级重试） */
-	failUploadAttempt?: { attempt: number; error: unknown };
-	zip?: Uint8Array;
-}
-
-function fakeClient(opts: FakeClientOptions = {}) {
-	const calls = {
-		uploadRequests: [] as ConvertOptions["params"][],
-		put: [] as string[],
-		poll: 0,
-	};
-	const client = {
-		async getUploadUrls(_files: unknown, params: ConvertOptions["params"]) {
-			calls.uploadRequests.push(params);
-			if (opts.failUploadAttempt && opts.failUploadAttempt.attempt === calls.uploadRequests.length) {
-				throw opts.failUploadAttempt.error;
-			}
-			return { batchId: "batch-1", urls: ["https://up/1"] };
-		},
-		async putFile(url: string) {
-			calls.put.push(url);
-		},
-		async pollBatch(_id: string, onUpdate: (r: unknown[]) => void) {
-			calls.poll++;
-			onUpdate([{ fileName: "报告.pdf", state: "running" }]);
-			onUpdate([{ fileName: "报告.pdf", state: "done" }]);
-			return [{ fileName: "报告.pdf", state: "done", fullZipUrl: "https://zip" }];
-		},
-		async downloadZip() {
-			const zip = opts.zip ?? (await buildZip());
-			return zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.byteLength) as ArrayBuffer;
-		},
-	};
-	return { client: client as unknown as MineruClient, calls };
-}
-
-async function buildZip(): Promise<Uint8Array> {
-	const zip = new JSZip();
-	zip.file("报告/full.md", "# 标题\n\n![图](images/1.jpg)");
-	zip.file("报告/images/1.jpg", new Uint8Array([9, 8, 7]));
-	zip.file("报告/文稿.docx", "docx-bytes");
-	zip.file("报告/文稿.tex", "tex-bytes");
-	return zip.generateAsync({ type: "uint8array" });
-}
+// 假客户端与结果 zip 生成集中在 tests/helpers/fake-client.ts
 
 function setup(files: Record<string, string>, opts: FakeClientOptions = {}) {
 	const vault = createVault();
@@ -92,7 +50,7 @@ test("convertFiles 写入 Markdown、图片并改写相对链接", async () => {
 	assert.equal(report.total, 1);
 	assert.equal(report.succeeded, 1);
 	assert.equal(report.failed, 0);
-	assert.deepEqual(calls.put, ["https://up/1"]);
+	assert.deepEqual(calls.put, ["https://up/0"]);
 
 	const result = report.results[0];
 	assert.equal(result.outputPath, "MinerU转换/报告.md");

@@ -1,11 +1,14 @@
-import { Notice, Plugin, TFile } from "obsidian";
+import { Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
 import { MineruClient } from "./mineru/api";
 import { ConversionPipeline } from "./mineru/pipeline";
 import { isConvertiblePath } from "./utils";
 import { Translator } from "./translate/translator";
 import { LlmEngine } from "./translate/llm";
+import { TranslationQueue } from "./translate/queue";
 import { ConversionManager } from "./ui/manager";
 import { ConversionWizard, type WizardDeps } from "./ui/wizard";
+import { ProgressView, PROGRESS_VIEW_TYPE } from "./ui/progress-view";
+import { TranslationModal } from "./ui/translation-modal";
 import { DEFAULT_SETTINGS, mergeSettings, MineruSettingTab, type PluginSettings } from "./settings";
 import type { ConvertOptions, ManagerState, TestResult } from "./types";
 
@@ -14,22 +17,39 @@ export default class MineruPlugin extends Plugin {
 	client!: MineruClient;
 	pipeline!: ConversionPipeline;
 	translator!: Translator;
+	queue!: TranslationQueue;
 	manager!: ConversionManager;
 
 	private wizardIconEl: HTMLElement | null = null;
 	private convertIconEl: HTMLElement | null = null;
 	private translateIconEl: HTMLElement | null = null;
+	private progressIconEl: HTMLElement | null = null;
 	private stateResetTimer: number | null = null;
 	private translateStateTimer: number | null = null;
 	private currentTranslationTimer: number | null = null;
+	private progressOpenTimer: number | null = null;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
-		this.client = new MineruClient(() => this.settings.mineruApiToken);
+		this.client = new MineruClient(
+			() => this.settings.mineruApiToken,
+			() => this.settings.maxAutoRetries,
+		);
 		this.pipeline = new ConversionPipeline(this.app, this.client, () => this.settings);
 		this.translator = new Translator(this.app);
+		this.queue = new TranslationQueue(this.app, this.translator, () => this.settings);
 		this.manager = new ConversionManager(this.pipeline);
 		this.manager.onStateChange((state) => this.handleConversionState(state));
+
+		this.registerView(
+			PROGRESS_VIEW_TYPE,
+			(leaf: WorkspaceLeaf) =>
+				new ProgressView(leaf, {
+					manager: this.manager,
+					queue: this.queue,
+					revealPath: (path) => this.revealPath(path),
+				}),
+		);
 
 		this.setupRibbons();
 		this.addSettingTab(new MineruSettingTab(this.app, this));
@@ -61,10 +81,45 @@ export default class MineruPlugin extends Plugin {
 			checkCallback: (checking) => {
 				const file = this.app.workspace.getActiveFile();
 				if (file && file.extension === "md") {
-					if (!checking) this.translateFile(file);
+					if (!checking) void this.translateFile(file);
 					return true;
 				}
 				return false;
+			},
+		});
+
+		this.addCommand({
+			id: "batch-translate",
+			name: "MinerU：批量翻译（队列）",
+			callback: () => {
+				this.openTranslationModal();
+			},
+		});
+
+		this.addCommand({
+			id: "translate-all-notes",
+			name: "MinerU：批量翻译整个文件夹",
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file) return false;
+				if (!checking) this.queueFolder(file);
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "retry-failed-conversion",
+			name: "MinerU：重试上次失败的转换",
+			callback: () => {
+				void this.retryFailedConversion();
+			},
+		});
+
+		this.addCommand({
+			id: "open-progress-panel",
+			name: "MinerU：打开进度面板",
+			callback: () => {
+				void this.activateProgressView();
 			},
 		});
 
@@ -87,12 +142,24 @@ export default class MineruPlugin extends Plugin {
 							.setTitle("用 MinerU 翻译此文件")
 							.setIcon("languages")
 							.onClick(() => {
-								this.translateFile(file);
+								void this.translateFile(file);
+							}),
+					);
+					menu.addItem((item) =>
+						item
+							.setTitle("用 MinerU 翻译所在文件夹")
+							.setIcon("folder")
+							.onClick(() => {
+								this.queueFolder(file);
 							}),
 					);
 				}
 			}),
 		);
+
+		this.queue.onChange((state) => {
+			if (state.status === "running") this.openProgressViewSoon();
+		});
 	}
 
 	async saveSettings(): Promise<void> {
@@ -108,10 +175,18 @@ export default class MineruPlugin extends Plugin {
 	}
 
 	private setupRibbons(): void {
-		for (const el of [this.wizardIconEl, this.convertIconEl, this.translateIconEl]) el?.remove();
+		for (const el of [
+			this.wizardIconEl,
+			this.convertIconEl,
+			this.translateIconEl,
+			this.progressIconEl,
+		]) {
+			el?.remove();
+		}
 		this.wizardIconEl = null;
 		this.convertIconEl = null;
 		this.translateIconEl = null;
+		this.progressIconEl = null;
 
 		this.wizardIconEl = this.addRibbonIcon("documents", "MinerU 转换向导", () => {
 			new ConversionWizard(this.app, this.wizardDeps()).open();
@@ -119,13 +194,19 @@ export default class MineruPlugin extends Plugin {
 
 		if (this.settings.showQuickConvertButton) {
 			this.convertIconEl = this.addRibbonIcon("file-plus", "MinerU：快速转换当前文件", () => {
-				this.quickConvert();
+				void this.quickConvert();
 			});
 		}
 
 		if (this.settings.showQuickTranslateButton) {
 			this.translateIconEl = this.addRibbonIcon("languages", "MinerU：快速翻译当前文件", () => {
-				this.quickTranslate();
+				void this.quickTranslate();
+			});
+		}
+
+		if (this.settings.showProgressButton) {
+			this.progressIconEl = this.addRibbonIcon("activity", "MinerU：打开进度面板", () => {
+				void this.activateProgressView();
 			});
 		}
 	}
@@ -136,6 +217,12 @@ export default class MineruPlugin extends Plugin {
 			this.wizardIconEl.toggleClass("mineru-done", state.status === "done");
 			this.wizardIconEl.toggleClass("mineru-failed", state.status === "failed");
 		}
+		if (this.progressIconEl) {
+			this.progressIconEl.toggleClass("mineru-running", state.status === "running" || this.queue.isRunning);
+			this.progressIconEl.toggleClass("mineru-done", state.status === "done");
+			this.progressIconEl.toggleClass("mineru-failed", state.status === "failed");
+		}
+		if (state.status === "running") this.openProgressViewSoon();
 		if (state.status === "done" || state.status === "failed") {
 			if (this.stateResetTimer !== null) window.clearTimeout(this.stateResetTimer);
 			this.stateResetTimer = window.setTimeout(() => {
@@ -174,22 +261,73 @@ export default class MineruPlugin extends Plugin {
 		}, 5000);
 	}
 
-	private async quickConvert(): Promise<void> {
-		const file = this.app.workspace.getActiveFile();
-		if (!file || !isConvertiblePath(file.path)) {
-			new Notice("请先打开一个支持转换的文件（PDF / Word / PPT / Excel / 图片）");
+	/** 展开进度面板（去抖，避免同一批任务反复切换 leaf） */
+	private openProgressViewSoon(): void {
+		if (!this.settings.autoOpenProgressView) return;
+		if (this.progressOpenTimer !== null) return;
+		this.progressOpenTimer = window.setTimeout(() => {
+			this.progressOpenTimer = null;
+			void this.activateProgressView();
+		}, 400);
+	}
+
+	/** 激活进度面板（已存在则复用） */
+	async activateProgressView(): Promise<void> {
+		const existing = this.app.workspace.getLeavesOfType(PROGRESS_VIEW_TYPE);
+		if (existing.length > 0) {
+			this.app.workspace.revealLeaf(existing[0]);
 			return;
 		}
-		if (this.manager.isRunning) {
-			new Notice("已有转换任务正在进行，请等待完成或先取消");
+		const leaf = this.app.workspace.getRightLeaf(false);
+		if (!leaf) return;
+		await leaf.setViewState({ type: PROGRESS_VIEW_TYPE, active: true });
+		this.app.workspace.revealLeaf(leaf);
+	}
+
+	private async revealPath(path: string): Promise<void> {
+		const file = this.app.vault.getAbstractFileByPath(path);
+		if (file instanceof TFile) await this.app.workspace.getLeaf(false).openFile(file);
+	}
+
+	/** 当前笔记所在文件夹下的全部 Markdown 入队 */
+	private queueFolder(file: TFile): void {
+		const folder = file.parent?.path ?? "";
+		const files = this.app.vault
+			.getFiles()
+			.filter((f) => f.extension === "md" && f.basename !== "README" && (!folder || f.path.startsWith(folder + "/")));
+		if (files.length === 0) {
+			new Notice("该文件夹下没有 Markdown 文件");
 			return;
 		}
-		if (!this.settings.mineruApiToken.trim()) {
-			new Notice("请先在设置中配置 MinerU API Token");
+		const added = this.queue.add(files);
+		new Notice(`已加入翻译队列：${added} 个文件（共找到 ${files.length} 个）`, 4000);
+		if (added > 0) this.openTranslationModal();
+	}
+
+	private openTranslationModal(): void {
+		new TranslationModal(this.app, {
+			app: this.app,
+			queue: this.queue,
+			getSettings: () => this.settings,
+			openPath: (path) => void this.revealPath(path),
+		}).open();
+	}
+
+	private async retryFailedConversion(): Promise<void> {
+		if (!this.manager.canRetry) {
+			new Notice("没有需要重试的失败项");
 			return;
 		}
+		const count = this.manager.failedFiles.length;
+		new Notice(`正在重试 ${count} 个失败文件…`, 3000);
+		await this.activateProgressView();
+		const report = await this.manager.retryFailed();
+		if (report === null) new Notice("重试未能启动（可能已有任务在运行）", 4000);
+	}
+
+	private convertOptionsFromSettings(): ConvertOptions {
 		const s = this.settings;
-		const options: ConvertOptions = {
+		return {
 			outputFolder: s.outputFolder,
 			params: {
 				modelVersion: s.parseModel,
@@ -204,8 +342,31 @@ export default class MineruPlugin extends Plugin {
 			convertImageToHtml: s.convertImageToHtml,
 			imageWidth: s.imageWidthPercent,
 			showImageFilename: s.showImageFilename,
+			collisionPolicy: s.conversionCollisionPolicy,
+			split: {
+				enabled: s.autoSplitEnabled,
+				maxPages: s.autoSplitMaxPages,
+				maxSizeMB: s.autoSplitMaxSizeMB,
+				dedupeTitle: s.splitDedupeTitle,
+			},
 		};
-		const started = await this.manager.start([file], options);
+	}
+
+	private async quickConvert(): Promise<void> {
+		const file = this.app.workspace.getActiveFile();
+		if (!file || !isConvertiblePath(file.path)) {
+			new Notice("请先打开一个支持转换的文件（PDF / Word / PPT / Excel / 图片）");
+			return;
+		}
+		if (this.manager.isRunning) {
+			new Notice("已有转换任务正在进行，请等待完成或先取消");
+			return;
+		}
+		if (!this.settings.mineruApiToken.trim()) {
+			new Notice("请先在设置中配置 MinerU API Token");
+			return;
+		}
+		const started = await this.manager.start([file], this.convertOptionsFromSettings());
 		if (started === null) new Notice("已有转换任务正在进行");
 	}
 

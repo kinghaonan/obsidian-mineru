@@ -10,7 +10,7 @@
 		"pretest": "node tests/build.mjs",
 		"test": "node --test --test-timeout=30000 \".test-build/*.test.cjs\"",
 		"check:parity": "node scripts/check-parity.mjs",
-		"verify": "npm run typecheck && npm run build && npm test && npm run check:parity"
+		"verify": "npm run typecheck && npm run build && npm test && npm run check:parity -- --strict"
 	},
 	"keywords": [
 		"obsidian",
@@ -29,6 +29,7 @@
 		"typescript": "^5.6.3"
 	},
 	"dependencies": {
-		"jszip": "^3.10.1"
+		"jszip": "^3.10.1",
+		"pdf-lib": "^1.17.1"
 	}
 }

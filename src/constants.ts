@@ -1,4 +1,4 @@
-import type { ExtraFormatOption, LlmPreset } from "./types";
+import type { CollisionPolicyOption, ExtraFormatOption, LlmPreset } from "./types";
 
 /** MinerU Standard API 基地址 */
 export const MINERU_API_BASE = "https://mineru.net/api/v4";
@@ -36,6 +36,37 @@ export const EXTRA_FORMATS: ExtraFormatOption[] = [
 	{ key: "html", label: "HTML" },
 	{ key: "latex", label: "LaTeX" },
 ];
+
+/** 目标文件已存在时的处理策略 */
+export const COLLISION_POLICIES: CollisionPolicyOption[] = [
+	{ key: "rename", label: "自动重命名（追加 (1)）" },
+	{ key: "overwrite", label: "覆盖已有 Markdown" },
+	{ key: "skip", label: "跳过已转换文件" },
+];
+
+/** MinerU Standard API 单次解析的页数上限（超出需切分） */
+export const MINERU_MAX_PAGES = 200;
+
+/** 默认分片页数：留出余量，避免复杂排版文档被判超页 */
+export const DEFAULT_SPLIT_PAGES = 80;
+
+/** 默认分片体积上限（MB） */
+export const DEFAULT_SPLIT_SIZE_MB = 100;
+
+/** 自动重试次数（0 表示关闭） */
+export const DEFAULT_MAX_RETRIES = 2;
+
+/** 基础退避间隔（毫秒），按次数指数增长 */
+export const RETRY_BASE_DELAY_MS = 1_500;
+
+/** 触发瞬时错误重试的 HTTP 状态码 */
+export const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 529]);
+
+/** 分片合并时插入的分隔标记前缀 */
+export const PART_MARKER_PREFIX = "<!-- MinerU 分片";
+
+/** 翻译队列默认并发 */
+export const DEFAULT_TRANSLATION_CONCURRENCY = 2;
 
 /** 附加导出格式（向导用） */
 export const WIZARD_EXTRA_FORMATS: ExtraFormatOption[] = [

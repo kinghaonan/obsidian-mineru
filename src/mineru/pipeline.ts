@@ -9,13 +9,36 @@ import {
 	toArrayBuffer,
 } from "../utils";
 import { imagesToCenteredHtml, rewriteImageLinks } from "../markdown";
-import type { CancelSignal, ConvertOptions, ConvertReport, FileProgress, ZipContents } from "../types";
+import type {
+	CancelSignal,
+	ConvertOptions,
+	ConvertReport,
+	FileProgress,
+	MergedPart,
+	PdfChunk,
+	ZipContents,
+} from "../types";
 import type { MineruClient } from "./api";
 import { errorMessageFor, MineruError } from "./errors";
+import { mergeParts } from "./merge";
+import { countPdfPages, needsSplit, splitPdf } from "./split";
 
 const EXTRA_EXT_MAP: Record<string, string> = { docx: "docx", html: "html", latex: "tex" };
 
-/** 完整转换管线：上传 → 轮询 → 解压 → 写入库 */
+/** 待上传的一个条目：未切分时 partIndex = 0 */
+interface StagedItem {
+	source: TFile;
+	data: ArrayBuffer;
+	uploadName: string;
+	basename: string;
+	dataId: string;
+	partIndex: number;
+	partsTotal: number;
+	startPage: number;
+	endPage: number;
+}
+
+/** 转换管线：上传 → 轮询 → 解压 → （分片合并）→ 写入库 */
 export class ConversionPipeline {
 	constructor(
 		private app: App,
@@ -32,27 +55,25 @@ export class ConversionPipeline {
 		if (!this.getSettings().mineruApiToken) {
 			throw new MineruError("请先在设置中配置 MinerU API Token");
 		}
-		const report: ConvertReport = { total: files.length, succeeded: 0, failed: 0, results: [] };
+		const report: ConvertReport = {
+			total: files.length,
+			succeeded: 0,
+			failed: 0,
+			skipped: 0,
+			results: [],
+		};
 		if (files.length === 0) return report;
 
-		// 读取文件并预检大小
-		const staged: { file: TFile; data: ArrayBuffer; name: string; basename: string; dataId: string }[] = [];
+		// 读取文件；超大 PDF 尝试切分后再上传
+		const staged: StagedItem[] = [];
+		const groups = new Map<TFile, StagedItem[]>();
 		for (let i = 0; i < files.length; i++) {
 			if (signal.cancelled) throw new MineruError("转换已取消", "CANCELLED");
 			const file = files[i];
 			const data = await this.app.vault.readBinary(file);
-			if (data.byteLength > MAX_FILE_SIZE) {
-				report.failed++;
-				report.results.push({ fileName: file.name, error: "文件超过 200MB 上限，请拆分后重试" });
-				continue;
-			}
-			staged.push({
-				file,
-				data,
-				name: file.name,
-				basename: file.basename,
-				dataId: `${asciiSlug(file.basename)}-${i}`,
-			});
+			const items = await this.stage(file, data, i, options, report);
+			groups.set(file, items);
+			staged.push(...items);
 		}
 		if (staged.length === 0) return report;
 
@@ -60,11 +81,9 @@ export class ConversionPipeline {
 		let batchId: string;
 		let urls: string[];
 		let extraFormatsOk = true;
+		const targets = staged.map((f) => ({ name: f.uploadName, dataId: f.dataId }));
 		try {
-			const result = await this.client.getUploadUrls(
-				staged.map((f) => ({ name: f.name, dataId: f.dataId })),
-				options.params,
-			);
+			const result = await this.client.getUploadUrls(targets, options.params);
 			batchId = result.batchId;
 			urls = result.urls;
 		} catch (e) {
@@ -73,10 +92,10 @@ export class ConversionPipeline {
 				e instanceof MineruError &&
 				e.code === -500
 			) {
-				const retry = await this.client.getUploadUrls(
-					staged.map((f) => ({ name: f.name, dataId: f.dataId })),
-					{ ...options.params, extraFormats: [] },
-				);
+				const retry = await this.client.getUploadUrls(targets, {
+					...options.params,
+					extraFormats: [],
+				});
 				batchId = retry.batchId;
 				urls = retry.urls;
 				extraFormatsOk = false;
@@ -89,7 +108,11 @@ export class ConversionPipeline {
 		for (let i = 0; i < staged.length; i++) {
 			if (signal.cancelled) throw new MineruError("转换已取消", "CANCELLED");
 			const item = staged[i];
-			onProgress({ fileName: item.name, state: "uploading" });
+			onProgress({
+				fileName: item.source.name,
+				state: "uploading",
+				part: item.partsTotal > 1 ? `${item.partIndex}/${item.partsTotal} 分片` : undefined,
+			});
 			await this.client.putFile(urls[i], item.data);
 		}
 
@@ -97,13 +120,27 @@ export class ConversionPipeline {
 		const pollResults = await this.client.pollBatch(
 			batchId,
 			(results) => {
-				for (const r of results) {
+				const byName = new Map<string, (typeof results)[number]>();
+				for (const r of results) byName.set(r.fileName, r);
+				for (const item of staged) {
+					const r = byName.get(item.uploadName);
+					if (!r) continue;
 					if (r.state === "done") {
-						onProgress({ fileName: r.fileName, state: "done" });
+						onProgress({ fileName: item.source.name, state: "done", part: partLabel(item) });
 					} else if (r.state === "failed") {
-						onProgress({ fileName: r.fileName, state: "failed", detail: r.errMsg });
+						onProgress({
+							fileName: item.source.name,
+							state: "failed",
+							detail: r.errMsg,
+							part: partLabel(item),
+						});
 					} else {
-						onProgress({ fileName: r.fileName, state: "parsing", detail: stateLabel(r.state) });
+						onProgress({
+							fileName: item.source.name,
+							state: "parsing",
+							detail: stateLabel(r.state),
+							part: partLabel(item),
+						});
 					}
 				}
 			},
@@ -112,38 +149,178 @@ export class ConversionPipeline {
 		const byName = new Map<string, (typeof pollResults)[number]>();
 		for (const r of pollResults) byName.set(r.fileName, r);
 
-		// 逐个下载解压并写库
-		for (const item of staged) {
+		// 按源文件归组：逐个下载解压（分片则合并）后写库
+		for (const [, items] of groups) {
 			if (signal.cancelled) throw new MineruError("转换已取消", "CANCELLED");
-			const result = byName.get(item.name);
-			if (!result || result.state !== "done" || !result.fullZipUrl) {
-				const detail =
-					result?.errMsg ||
-					(result?.errCode !== undefined ? errorMessageFor(result.errCode) : "");
-				report.failed++;
-				report.results.push({ fileName: item.name, error: detail || "解析失败，未获得结果" });
-				continue;
-			}
+			const source = items[0].source;
 			try {
-				const zip = await this.client.downloadZip(result.fullZipUrl);
-				const contents = await extractZip(zip, extraFormatsOk ? options.params.extraFormats : []);
-				const written = await this.writeResult(item.file, item.basename, contents, options);
+				const contents = await this.collectContents(
+					items,
+					byName,
+					extraFormatsOk ? options.params.extraFormats : [],
+					options.split.dedupeTitle,
+				);
+				if (!contents) {
+					report.failed++;
+					report.results.push({
+						fileName: source.name,
+						error: this.describeFailure(items, byName),
+					});
+					continue;
+				}
+				const written = await this.writeResult(source, items[0].basename, contents, options);
+				if (written.skipped) {
+					report.skipped++;
+					report.results.push({
+						fileName: source.name,
+						outputPath: written.outputPath,
+						skipped: true,
+						parts: items[0].partsTotal,
+					});
+					continue;
+				}
 				report.succeeded++;
 				report.results.push({
-					fileName: item.name,
+					fileName: source.name,
 					outputPath: written.outputPath,
 					images: written.imageCount,
 					extras: written.extraCount,
+					parts: items[0].partsTotal,
 				});
 			} catch (e) {
 				report.failed++;
 				report.results.push({
-					fileName: item.name,
+					fileName: source.name,
 					error: e instanceof MineruError ? e.message : String(e instanceof Error ? e.message : e),
+					parts: items[0].partsTotal,
 				});
 			}
 		}
 		return report;
+	}
+
+	/** 读取单个文件并生成待上传条目（必要时切分 PDF） */
+	private async stage(
+		file: TFile,
+		data: ArrayBuffer,
+		order: number,
+		options: ConvertOptions,
+		report: ConvertReport,
+	): Promise<StagedItem[]> {
+		const basename = file.basename;
+		const splitable = options.split.enabled && file.extension === "pdf";
+
+		if (splitable) {
+			const pageCount = await countPdfPages(data);
+			const overPages = needsSplit(pageCount, data.byteLength, options.split);
+			const overSize =
+				options.split.enabled &&
+				data.byteLength > Math.min(options.split.maxSizeMB, 200) * 1024 * 1024;
+			if (overPages || (overSize && pageCount > 1)) {
+				const sizeLimitMB = Math.min(Math.max(1, options.split.maxSizeMB), 200);
+				const chunks = await this.safeSplit(data, options.split.maxPages, sizeLimitMB);
+				if (chunks.length > 1) {
+					return chunks.map((chunk) => this.chunkToItem(file, chunk, chunks.length, order));
+				}
+			}
+		}
+
+		if (data.byteLength > MAX_FILE_SIZE) {
+			report.failed++;
+			report.results.push({
+				fileName: file.name,
+				error:
+					file.extension === "pdf"
+						? "文件超过 200MB 上限且无法切分，请先在设置中开启“大文件自动切分”或手动拆分"
+						: "文件超过 200MB 上限，请拆分后重试",
+			});
+			return [];
+		}
+
+		return [
+			{
+				source: file,
+				data,
+				uploadName: file.name,
+				basename,
+				dataId: `${asciiSlug(basename)}-${order}`,
+				partIndex: 0,
+				partsTotal: 1,
+				startPage: 0,
+				endPage: 0,
+			},
+		];
+	}
+
+	/** 切分失败（加密/损坏等）时返回空数组，交由调用方按整文件处理 */
+	private async safeSplit(data: ArrayBuffer, maxPages: number, sizeLimitMB: number): Promise<PdfChunk[]> {
+		try {
+			return await splitPdf(data, maxPages, sizeLimitMB);
+		} catch {
+			return [];
+		}
+	}
+
+	private chunkToItem(file: TFile, chunk: PdfChunk, total: number, order: number): StagedItem {
+		const basename = file.basename;
+		const suffix = `__p${chunk.index}-${chunk.start}-${chunk.end}`;
+		return {
+			source: file,
+			data: chunk.data,
+			uploadName: `${basename}${suffix}.pdf`,
+			basename,
+			dataId: `${asciiSlug(basename)}-${order}-${chunk.index}`,
+			partIndex: chunk.index,
+			partsTotal: total,
+			startPage: chunk.start,
+			endPage: chunk.end,
+		};
+	}
+
+	/** 下载并解压一个源文件的全部条目；分片时合并 */
+	private async collectContents(
+		items: StagedItem[],
+		byName: Map<string, { state: string; fullZipUrl?: string; errMsg?: string; errCode?: string | number }>,
+		extraFormats: string[],
+		dedupeTitle: boolean,
+	): Promise<ZipContents | null> {
+		const parts: MergedPart[] = [];
+		const extras: ZipContents["extras"] = [];
+
+		for (const item of items) {
+			const result = byName.get(item.uploadName);
+			if (!result || result.state !== "done" || !result.fullZipUrl) return null;
+			const zip = await this.client.downloadZip(result.fullZipUrl);
+			const contents = await extractZip(zip, extraFormats);
+			if (items.length > 1) {
+				parts.push({ markdown: contents.markdown, images: contents.images, start: item.startPage, end: item.endPage });
+			} else {
+				return contents;
+			}
+		}
+
+		if (parts.length === 0) return null;
+		const merged = mergeParts(parts, { dedupeTitle });
+		return { markdown: merged.markdown, images: merged.images, extras };
+	}
+
+	/** 汇总分片失败原因 */
+	private describeFailure(
+		items: StagedItem[],
+		byName: Map<string, { state: string; errMsg?: string; errCode?: string | number }>,
+	): string {
+		const failed = items
+			.map((item) => ({ item, result: byName.get(item.uploadName) }))
+			.filter(({ result }) => !result || result.state !== "done");
+		if (failed.length === 0) return "解析失败，未获得结果";
+		const first = failed[0];
+		const detail =
+			first.result?.errMsg ||
+			(first.result?.errCode !== undefined ? errorMessageFor(first.result.errCode) : "");
+		const where =
+			first.item.partsTotal > 1 ? `（分片 ${first.item.partIndex}/${first.item.partsTotal}，第 ${first.item.startPage}-${first.item.endPage} 页）` : "";
+		const suffix = failed.length > 1 ? `，另有 ${failed.length - 1} 个分片失败` : "";
+		return `${detail || "解析失败，未获得结果"}${where}${suffix}`;
 	}
 
 	private async ensureFolder(folder: string): Promise<void> {
@@ -157,24 +334,51 @@ export class ConversionPipeline {
 		}
 	}
 
+	/** 写入（或覆盖）二进制文件 */
+	private async writeBinary(path: string, data: ArrayBuffer): Promise<void> {
+		const existing = this.app.vault.getAbstractFileByPath(path);
+		if (existing instanceof TFile) {
+			await this.app.vault.modifyBinary(existing, data);
+			return;
+		}
+		await this.app.vault.createBinary(path, data);
+	}
+
+	/** 写入（或覆盖）文本文件 */
+	private async writeText(path: string, content: string): Promise<void> {
+		const existing = this.app.vault.getAbstractFileByPath(path);
+		if (existing instanceof TFile) {
+			await this.app.vault.modify(existing, content);
+			return;
+		}
+		await this.app.vault.create(path, content);
+	}
+
 	async writeResult(
 		sourceFile: TFile,
 		basename: string,
 		contents: ZipContents,
 		options: ConvertOptions,
-	): Promise<{ outputPath: string; imageCount: number; extraCount: number }> {
+	): Promise<{ outputPath: string; imageCount: number; extraCount: number; skipped: boolean }> {
 		const vault = this.app.vault;
 		const outDir = normalizePath(options.outputFolder);
 		await this.ensureFolder(outDir);
 
 		let safeName = sanitizeFileName(basename);
 		let outputPath = normalizePath(`${outDir}/${safeName}.md`);
-		if (vault.getAbstractFileByPath(outputPath)) {
-			let n = 1;
-			do {
-				safeName = `${sanitizeFileName(basename)} (${n++})`;
-				outputPath = normalizePath(`${outDir}/${safeName}.md`);
-			} while (vault.getAbstractFileByPath(outputPath));
+		let existing = vault.getAbstractFileByPath(outputPath);
+		if (existing) {
+			if (options.collisionPolicy === "skip") {
+				return { outputPath, imageCount: 0, extraCount: 0, skipped: true };
+			}
+			if (options.collisionPolicy === "rename") {
+				let n = 1;
+				do {
+					safeName = `${sanitizeFileName(basename)} (${n++})`;
+					outputPath = normalizePath(`${outDir}/${safeName}.md`);
+					existing = vault.getAbstractFileByPath(outputPath);
+				} while (existing);
+			}
 		}
 
 		let markdown = contents.markdown;
@@ -188,7 +392,7 @@ export class ConversionPipeline {
 			const urlMap = new Map<string, string>();
 			for (const image of contents.images) {
 				const binPath = normalizePath(`${imageDir}/${image.relPath}`);
-				await vault.createBinary(binPath, toArrayBuffer(image.data));
+				await this.writeBinary(binPath, toArrayBuffer(image.data));
 				const relative = relativePath(outDir, binPath);
 				urlMap.set(image.relPath, relative);
 				urlMap.set(`images/${image.relPath}`, relative);
@@ -201,18 +405,19 @@ export class ConversionPipeline {
 			markdown = imagesToCenteredHtml(markdown, options.imageWidth, options.showImageFilename);
 		}
 
-		await vault.create(outputPath, markdown);
+		await this.writeText(outputPath, markdown);
 
 		let extraCount = 0;
 		for (const extra of contents.extras) {
 			const ext = EXTRA_EXT_MAP[extra.format] ?? extra.format;
-			await vault.createBinary(
-				normalizePath(`${outDir}/${safeName}.${ext}`),
-				toArrayBuffer(extra.data),
-			);
+			await this.writeBinary(normalizePath(`${outDir}/${safeName}.${ext}`), toArrayBuffer(extra.data));
 			extraCount++;
 		}
 
-		return { outputPath, imageCount, extraCount };
+		return { outputPath, imageCount, extraCount, skipped: false };
 	}
+}
+
+function partLabel(item: StagedItem): string | undefined {
+	return item.partsTotal > 1 ? `${item.partIndex}/${item.partsTotal} 分片` : undefined;
 }

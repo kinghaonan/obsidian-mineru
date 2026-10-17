@@ -7,8 +7,19 @@ import {
 	ToggleComponent,
 	App,
 } from "obsidian";
-import { EXTRA_FORMATS, LLM_PRESETS, OCR_LANGUAGE_DESC, TARGET_LANGUAGES } from "./constants";
-import type { TestResult } from "./types";
+import {
+	EXTRA_FORMATS,
+	LLM_PRESETS,
+	OCR_LANGUAGE_DESC,
+	TARGET_LANGUAGES,
+	COLLISION_POLICIES,
+	DEFAULT_MAX_RETRIES,
+	DEFAULT_SPLIT_PAGES,
+	DEFAULT_SPLIT_SIZE_MB,
+	DEFAULT_TRANSLATION_CONCURRENCY,
+	MINERU_MAX_PAGES,
+} from "./constants";
+import type { CollisionPolicy, TestResult } from "./types";
 
 export interface PluginSettings {
 	mineruApiToken: string;
@@ -40,6 +51,24 @@ export interface PluginSettings {
 	maxOutputTokens: number;
 	collisionPolicy: "rename" | "overwrite";
 	temperature: number;
+
+	/* ---- 扩展：转换 ---- */
+	/** 目标 Markdown 已存在时的处理方式 */
+	conversionCollisionPolicy: CollisionPolicy;
+	/** 瞬时错误自动重试次数（0 关闭） */
+	maxAutoRetries: number;
+	/** 大文件自动切分 */
+	autoSplitEnabled: boolean;
+	autoSplitMaxPages: number;
+	autoSplitMaxSizeMB: number;
+	splitDedupeTitle: boolean;
+
+	/* ---- 扩展：翻译队列 / 进度面板 ---- */
+	/** 批量翻译并发数 */
+	translationConcurrency: number;
+	/** 任务开始时自动展开进度面板 */
+	autoOpenProgressView: boolean;
+	showProgressButton: boolean;
 }
 
 export const DEFAULT_SETTINGS: PluginSettings = {
@@ -72,6 +101,16 @@ export const DEFAULT_SETTINGS: PluginSettings = {
 	maxOutputTokens: 8192,
 	collisionPolicy: "rename",
 	temperature: 0.3,
+
+	conversionCollisionPolicy: "rename",
+	maxAutoRetries: DEFAULT_MAX_RETRIES,
+	autoSplitEnabled: true,
+	autoSplitMaxPages: DEFAULT_SPLIT_PAGES,
+	autoSplitMaxSizeMB: DEFAULT_SPLIT_SIZE_MB,
+	splitDedupeTitle: true,
+	translationConcurrency: DEFAULT_TRANSLATION_CONCURRENCY,
+	autoOpenProgressView: true,
+	showProgressButton: true,
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -488,6 +527,108 @@ export class MineruSettingTab extends PluginSettingTab {
 				});
 		});
 
+		containerEl.createEl("h2", { text: "大文件与容错" });
+
+		new Setting(containerEl)
+			.setName("同名文件处理")
+			.setDesc("转换结果 Markdown 已存在时的默认行为（向导可临时调整）")
+			.addDropdown((dropdown) => {
+				for (const policy of COLLISION_POLICIES) dropdown.addOption(policy.key, policy.label);
+				dropdown.setValue(s.conversionCollisionPolicy).onChange(async (value) => {
+					s.conversionCollisionPolicy = value as CollisionPolicy;
+					await this.host.saveSettings();
+				});
+			});
+
+		new Setting(containerEl)
+			.setName("网络失败自动重试")
+			.setDesc(`请求失败或返回 429/5xx 时自动重试的次数（0 关闭），当前：${s.maxAutoRetries}`)
+			.addSlider((slider: SliderComponent) => {
+				slider
+					.setLimits(0, 5, 1)
+					.setValue(s.maxAutoRetries)
+					.setDynamicTooltip()
+					.onChange(async (value) => {
+						s.maxAutoRetries = value;
+						await this.host.saveSettings();
+						this.display();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("大文件自动切分")
+			.setDesc(
+				`PDF 超过分片上限时自动切成多个分片批量上传，再按页码顺序合并回一篇 Markdown（MinerU 单次上限 ${MINERU_MAX_PAGES} 页 / 200MB）`,
+			)
+			.addToggle((toggle) => {
+				toggle.setValue(s.autoSplitEnabled).onChange(async (value) => {
+					s.autoSplitEnabled = value;
+					await this.host.saveSettings();
+				});
+			});
+
+		new Setting(containerEl)
+			.setName("每个分片页数上限")
+			.setDesc(`页数超过该值时切分，建议留出余量（当前 ${s.autoSplitMaxPages} 页）`)
+			.addText((text) => {
+				text.setPlaceholder(String(DEFAULT_SPLIT_PAGES)).setValue(String(s.autoSplitMaxPages)).onChange(async (value) => {
+					const num = Number(value);
+					if (Number.isFinite(num) && num > 0) {
+						s.autoSplitMaxPages = Math.floor(num);
+						await this.host.saveSettings();
+					}
+				});
+			});
+
+		new Setting(containerEl)
+			.setName("每个分片体积上限（MB）")
+			.setDesc(`单个分片超过该体积时继续二分，当前 ${s.autoSplitMaxSizeMB} MB（上限 200MB）`)
+			.addText((text) => {
+				text.setPlaceholder(String(DEFAULT_SPLIT_SIZE_MB)).setValue(String(s.autoSplitMaxSizeMB)).onChange(async (value) => {
+					const num = Number(value);
+					if (Number.isFinite(num) && num > 0) {
+						s.autoSplitMaxSizeMB = Math.min(Math.floor(num), 200);
+						await this.host.saveSettings();
+					}
+				});
+			});
+
+		new Setting(containerEl)
+			.setName("合并时去掉重复标题")
+			.setDesc("各分片常以相同的一级标题开头，合并时自动只保留第一个")
+			.addToggle((toggle) => {
+				toggle.setValue(s.splitDedupeTitle).onChange(async (value) => {
+					s.splitDedupeTitle = value;
+					await this.host.saveSettings();
+				});
+			});
+
+		containerEl.createEl("h2", { text: "翻译队列与进度面板" });
+
+		new Setting(containerEl)
+			.setName("批量翻译并发数")
+			.setDesc(`同时翻译的笔记数量（1-8），当前 ${s.translationConcurrency}`)
+			.addSlider((slider: SliderComponent) => {
+				slider
+					.setLimits(1, 8, 1)
+					.setValue(s.translationConcurrency)
+					.setDynamicTooltip()
+					.onChange(async (value) => {
+						s.translationConcurrency = value;
+						await this.host.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("任务开始时自动展开进度面板")
+			.setDesc("转换或翻译开始时，在右侧边栏展开「MinerU 进度」面板")
+			.addToggle((toggle) => {
+				toggle.setValue(s.autoOpenProgressView).onChange(async (value) => {
+					s.autoOpenProgressView = value;
+					await this.host.saveSettings();
+				});
+			});
+
 		containerEl.createEl("h2", { text: "界面按钮" });
 
 		new Setting(containerEl)
@@ -507,6 +648,17 @@ export class MineruSettingTab extends PluginSettingTab {
 			.addToggle((toggle: ToggleComponent) => {
 				toggle.setValue(s.showQuickTranslateButton).onChange(async (value) => {
 					s.showQuickTranslateButton = value;
+					await this.host.saveSettings();
+					this.host.refreshRibbons?.();
+				});
+			});
+
+		new Setting(containerEl)
+			.setName("显示「进度面板」按钮")
+			.setDesc("在侧边栏显示打开「MinerU 进度」面板的按钮")
+			.addToggle((toggle: ToggleComponent) => {
+				toggle.setValue(s.showProgressButton).onChange(async (value) => {
+					s.showProgressButton = value;
 					await this.host.saveSettings();
 					this.host.refreshRibbons?.();
 				});

@@ -65,3 +65,104 @@
 .clickable-icon.mineru-failed {
   color: var(--color-red);
 }
+
+/* 多选文件弹窗：点击行只切换勾选，底部按钮提交 */
+.mineru-suggest-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.mineru-suggest-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.mineru-suggest-check {
+  flex: 0 0 auto;
+  width: 1.2em;
+  text-align: center;
+  color: var(--text-accent);
+}
+
+/* 进度面板（侧边栏 ItemView） */
+.mineru-progress-view {
+  padding: 0 4px 16px;
+}
+
+.mineru-progress-view h3 {
+  margin: 12px 0 4px;
+  font-size: var(--font-ui-small);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-muted);
+}
+
+.mineru-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.mineru-toolbar-status {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mineru-toolbar-status.running {
+  color: var(--text-accent);
+}
+.mineru-toolbar-status.done {
+  color: var(--color-green);
+}
+.mineru-toolbar-status.failed {
+  color: var(--color-red);
+}
+
+.mineru-toolbar button {
+  font-size: var(--font-ui-smaller);
+  padding: 2px 8px;
+}
+
+.mineru-toolbar button.mineru-disabled,
+button.mineru-disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.mineru-progress-row button {
+  font-size: var(--font-ui-smaller);
+  margin-left: auto;
+  padding: 0 6px;
+}
+
+/* 进度状态色（覆盖原 4 态，扩展 skipped/pending 等） */
+.mineru-progress-state.pending {
+  color: var(--text-muted);
+}
+.mineru-progress-state.skipped {
+  color: var(--text-faint);
+}
+.mineru-progress-state.running {
+  color: var(--text-accent);
+}
+
+/* 批量翻译弹窗 */
+.mineru-queue-summary {
+  margin: 10px 0 4px;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.mineru-queue-list {
+  max-height: 320px;
+}

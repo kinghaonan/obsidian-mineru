@@ -10,7 +10,14 @@ import { makeTFile } from "./helpers/vault";
 const OPTIONS = { outputFolder: "out" } as unknown as ConvertOptions;
 
 function report(overrides: Partial<ConvertReport> = {}): ConvertReport {
-	return { total: 1, succeeded: 1, failed: 0, results: [], ...overrides };
+	return {
+		total: 1,
+		succeeded: 1,
+		failed: 0,
+		skipped: 0,
+		results: [{ fileName: "a.pdf", outputPath: "out/a.md" }],
+		...overrides,
+	};
 }
 
 function pipelineStub(
@@ -138,4 +145,122 @@ test("空闲时 reset 回到 idle，退订后不再收到事件", () => {
 	manager.reset();
 	assert.equal(manager.state.status, "idle");
 	assert.equal(calls, 1, "退订后不应再收到事件");
+});
+/* ------------------------------------------------------------ 失败重试 */
+
+function perFileReport(outcomes: Record<string, "ok" | "fail">): ConvertReport {
+	const results = Object.entries(outcomes).map(([fileName, state]) =>
+		state === "ok"
+			? { fileName, outputPath: `out/${fileName}.md` }
+			: { fileName, error: "解析失败" },
+	);
+	return {
+		total: results.length,
+		succeeded: results.filter((r) => !r.error).length,
+		failed: results.filter((r) => r.error).length,
+		skipped: 0,
+		results,
+	};
+}
+
+test("failedFiles 只挑出本轮失败的文件", async (t) => {
+	t.after(() => takeNotices());
+	const manager = new ConversionManager(
+		pipelineStub(async () => perFileReport({ "a.pdf": "ok", "b.pdf": "fail" })),
+	);
+	await manager.start([makeTFile("a.pdf"), makeTFile("b.pdf")], OPTIONS);
+	assert.deepEqual(manager.failedFiles.map((f) => f.path), ["b.pdf"]);
+	assert.equal(manager.canRetry, true);
+});
+
+test("retryFailed 只重跑失败项并合并历史结果", async (t) => {
+	t.after(() => takeNotices());
+	const seen: string[][] = [];
+	let round = 0;
+	const manager = new ConversionManager(
+		pipelineStub(async (files) => {
+			const names = files.map((f) => f.path);
+			seen.push(names);
+			round++;
+			return round === 1
+				? perFileReport({ "a.pdf": "ok", "b.pdf": "fail" })
+				: perFileReport({ "b.pdf": "ok" });
+		}),
+	);
+
+	await manager.start([makeTFile("a.pdf"), makeTFile("b.pdf")], OPTIONS);
+	assert.deepEqual(seen[0], ["a.pdf", "b.pdf"]);
+
+	const merged = await manager.retryFailed();
+	assert.deepEqual(seen[1], ["b.pdf"], "重试只应包含失败项");
+	assert.equal(merged?.succeeded, 2, "合并后 a 与 b 都算成功");
+	assert.equal(merged?.failed, 0);
+	assert.equal(merged?.total, 2);
+	assert.equal(merged?.results.find((r) => r.fileName === "b.pdf")?.attempts, 2, "重试过的文件累计 2 次");
+	assert.equal(manager.canRetry, false);
+});
+
+test("retryFailed 在全部失败被修复后不再累计", async (t) => {
+	t.after(() => takeNotices());
+	let round = 0;
+	const manager = new ConversionManager(
+		pipelineStub(async (files) => {
+			round++;
+			return round === 1
+				? perFileReport({ "a.pdf": "fail" })
+				: perFileReport({ "a.pdf": "ok" });
+		}),
+	);
+	await manager.start([makeTFile("a.pdf")], OPTIONS);
+	await manager.retryFailed();
+	assert.equal(manager.lastReport?.succeeded, 1);
+	assert.equal(manager.failedFiles.length, 0);
+	assert.equal(await manager.retryFailed(), null, "没有失败项时返回 null");
+});
+
+test("retryFailed 无失败项时返回 null 且不启动转换", async (t) => {
+	t.after(() => takeNotices());
+	let calls = 0;
+	const manager = new ConversionManager(
+		pipelineStub(async () => {
+			calls++;
+			return perFileReport({ "a.pdf": "ok" });
+		}),
+	);
+	await manager.start([makeTFile("a.pdf")], OPTIONS);
+	assert.equal(await manager.retryFailed(), null);
+	assert.equal(calls, 1);
+});
+
+test("重试沿用上次的选项", async (t) => {
+	t.after(() => takeNotices());
+	const used: ConvertOptions[] = [];
+	let round = 0;
+	const manager = new ConversionManager(
+		pipelineStub(async (_files, options) => {
+			used.push(options);
+			round++;
+			return round === 1
+				? perFileReport({ "a.pdf": "fail" })
+				: perFileReport({ "a.pdf": "ok" });
+		}),
+	);
+	await manager.start([makeTFile("a.pdf")], OPTIONS);
+	await manager.retryFailed();
+	assert.equal(used.length, 2);
+	assert.equal(used[1], used[0], "重试应复用同一份选项对象");
+});
+
+test("clear 清空记录后无法重试", async (t) => {
+	t.after(() => takeNotices());
+	const manager = new ConversionManager(
+		pipelineStub(async () => perFileReport({ "a.pdf": "fail" })),
+	);
+	await manager.start([makeTFile("a.pdf")], OPTIONS);
+	assert.equal(manager.canRetry, true);
+	manager.clear();
+	assert.equal(manager.canRetry, false);
+	assert.equal(manager.lastReport, null);
+	assert.deepEqual(manager.activeFiles, []);
+	assert.equal(manager.state.status, "idle");
 });

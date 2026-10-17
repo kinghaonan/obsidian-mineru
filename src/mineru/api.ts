@@ -1,5 +1,11 @@
 import { requestUrl } from "obsidian";
-import { MINERU_API_BASE, POLL_INTERVAL_MS, POLL_TIMEOUT_MS } from "../constants";
+import {
+	MINERU_API_BASE,
+	POLL_INTERVAL_MS,
+	POLL_TIMEOUT_MS,
+	RETRY_BASE_DELAY_MS,
+	RETRYABLE_STATUS,
+} from "../constants";
 import { sleep } from "../utils";
 import type { BatchFileResult, CancelSignal, ParseParams, TestResult } from "../types";
 import { errorMessageFor, MineruError } from "./errors";
@@ -32,20 +38,42 @@ interface Envelope {
 /**
  * MinerU Standard Batch API 客户端：
  * 申请上传地址 → PUT 上传 → 轮询批次结果 → 下载结果 zip
+ *
+ * 网络异常与 429/5xx 会按指数退避自动重试（maxRetries 次）。
  */
 export class MineruClient {
-	constructor(private getToken: () => string) {}
+	constructor(
+		private getToken: () => string,
+		private getMaxRetries: () => number = () => 0,
+	) {}
 
+	/** 真正发请求，带瞬时错误重试 */
 	async rawRequest(options: RawRequestOptions): Promise<RawResponse> {
 		const { url, method = "GET", body, headers } = options;
-		const resp = await requestUrl({
-			url,
-			method,
-			body,
-			headers,
-			throw: false,
-		});
-		return { status: resp.status, text: resp.text, arrayBuffer: resp.arrayBuffer };
+		const maxRetries = Math.max(0, Math.floor(this.getMaxRetries()));
+		let lastResponse: RawResponse | null = null;
+		let lastError: unknown = null;
+		for (let attempt = 0; attempt <= maxRetries; attempt++) {
+			try {
+				const resp = await requestUrl({
+					url,
+					method,
+					body,
+					headers,
+					throw: false,
+				});
+				lastResponse = { status: resp.status, text: resp.text, arrayBuffer: resp.arrayBuffer };
+				// 非瞬时状态（含 4xx 与 2xx）直接返回，由 parseEnvelope 给出带响应的错误
+				if (!RETRYABLE_STATUS.has(resp.status)) return lastResponse;
+			} catch (e) {
+				lastError = e;
+			}
+			if (attempt < maxRetries) await sleep(RETRY_BASE_DELAY_MS * 2 ** attempt);
+		}
+		// 有响应则交回上层解析（保留状态码与响应体），否则视为网络不可达
+		if (lastResponse) return lastResponse;
+		const msg = lastError instanceof Error ? lastError.message : String(lastError);
+		throw new MineruError(`网络请求失败：${msg}`);
 	}
 
 	private async jsonRequest(
@@ -69,6 +97,7 @@ export class MineruClient {
 				headers,
 			});
 		} catch (e) {
+			if (e instanceof MineruError) throw e;
 			const msg = e instanceof Error ? e.message : String(e);
 			throw new MineruError(`网络请求失败：${msg}`);
 		}
