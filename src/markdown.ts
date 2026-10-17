@@ -38,13 +38,24 @@ export function protectPlaceholders(text: string, options: { protectImages?: boo
 	return { text: out, restore };
 }
 
-const IMAGE_LINK_REGEX = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+(?:"[^"]*"|'[^']*'))?\)/g;
+/**
+ * 图片链接：同时兼容三种写法
+ *   ![alt](images/a.jpg)
+ *   ![alt](<带 空格 的 文件.jpg>)
+ *   ![alt](images/a.jpg "标题")
+ */
+const IMAGE_LINK_REGEX = /!\[([^\]]*)\]\(\s*(<[^>\n]*>|[^\s)]+)(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g;
+
+/** 取出链接目标（去掉 <>/引号） */
+function linkTarget(url: string): string {
+	return url.replace(/^</, "").replace(/>$/, "").replace(/["']/g, "");
+}
 
 /** 用映射表改写 Markdown 图片链接（支持 images/ 前缀回退） */
 export function rewriteImageLinks(markdown: string, urlMap: Map<string, string>): string {
 	const { text, restore } = protectPlaceholders(markdown, { protectImages: false });
 	const replaced = text.replace(IMAGE_LINK_REGEX, (whole, alt: string, url: string) => {
-		const cleanUrl = url.replace(/["']/g, "");
+		const cleanUrl = linkTarget(url);
 		const target = urlMap.get(cleanUrl) ?? urlMap.get(`images/${cleanUrl}`);
 		return target ? `![${alt}](${target})` : whole;
 	});
@@ -56,7 +67,7 @@ export function imagesToCenteredHtml(markdown: string, widthPercent: number, sho
 	const { text, restore } = protectPlaceholders(markdown, { protectImages: false });
 	const width = Math.max(10, Math.min(100, Math.round(widthPercent)));
 	const replaced = text.replace(IMAGE_LINK_REGEX, (whole, alt: string, url: string) => {
-		const cleanUrl = url.replace(/["']/g, "");
+		const cleanUrl = linkTarget(url);
 		const safeAlt = (alt ?? "").replace(/"/g, "&quot;");
 		const img = `<img src="${cleanUrl}" alt="${safeAlt}" width="${width}%"/>`;
 		if (!showFilename) return `<div style="text-align:center">${img}</div>`;

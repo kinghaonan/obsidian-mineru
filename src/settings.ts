@@ -270,7 +270,9 @@ export class MineruSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("图片保存文件夹")
-			.setDesc("留空则自动保存为：{输出文件夹}/{文件名}.assets（推荐，避免多文档图片互相覆盖）")
+			.setDesc(
+				"留空则自动保存为：{输出文件夹}/{文件名}.assets（推荐，避免多文档图片互相覆盖）。文件名中的空格会替换为 -、括号会被去掉，以保证图片链接可用",
+			)
 			.addText((text) => {
 				text.setPlaceholder("留空自动生成")
 					.setValue(s.imageFolder)

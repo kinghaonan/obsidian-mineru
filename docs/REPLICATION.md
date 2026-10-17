@@ -139,6 +139,35 @@ npm run check:parity -- --update   # 登记新基线
 | `autoOpenProgressView` | `true` | 任务开始自动展开进度面板 |
 | `showProgressButton` | `true` | 侧边栏显示进度面板按钮 |
 
+### 6.7 图片路径与链接可用性修复
+
+**问题**：文档名含空格或括号时（如 `Analytical Mechanics of Space Systems (Aiaa Education)`），
+图片目录名被原样拼进 `![](路径)`，Markdown 在第一个空格处截断，**图片全部无法显示**。
+
+**修复**（`src/utils.ts` + `src/markdown.ts` + `src/mineru/pipeline.ts`）：
+
+1. `assetFolderName(basename)`：图片目录名做链接安全化
+   - 空格/连续空白 → `-`
+   - 剔除 `()[]{}<>"|*?!^` 与文件系统非法字符
+   - 限长 60 字符，空结果回落为 `assets`
+   - 例：`Analytical Mechanics of Space Systems (Aiaa Education)`
+     → `Analytical-Mechanics-of-Space-Systems-Aiaa-Education.assets`
+2. `encodeLinkUrl(path)`：写进链接的目标做百分号编码
+   （空格→`%20`、`(`→`%28`、`)`→`%29`、`#`/`?`/`&`/`%` 等，中文与 `/` 保持原样）
+3. `IMAGE_LINK_REGEX` 扩展：支持 `<带 空格 的 路径.jpg>` 写法与带标题的链接，
+   避免含空格的原始链接漏改写
+4. 回归测试 `tests/image-links.test.ts`：模拟 Markdown 解析器验证链接不被截断
+
+**修复既有产物**：
+
+```bash
+npx esbuild scripts/fix-assets-links.mjs --bundle --platform=node --format=esm \
+  --alias:obsidian=./tests/stubs/obsidian.ts --outfile=fix.mjs
+node fix.mjs "<库内>/MinerU转换/某文档.md"
+```
+
+脚本会重命名 `.assets` 目录、同步修正 Markdown 中的全部引用，并报告断链数量。
+
 ## 7. 测试
 
 ```bash

@@ -35,6 +35,56 @@ export function asciiSlug(name: string): string {
 	return slug.length > 0 ? slug : "document";
 }
 
+/**
+ * 生成可安全写进 Markdown 链接的图片目录名。
+ * 文档名常含空格与括号（如 "Analytical Mechanics (AIAA)"），
+ * 直接拼进 `![](路径)` 会让链接在第一个空格处截断，因此：
+ * 空格 → 连字符，剔除括号等链接敏感字符，并限制长度。
+ */
+export function assetFolderName(basename: string): string {
+	const cleaned = basename
+		// 文件系统非法字符
+		.replace(/[<>:"/\\|?*]/g, "")
+		// Markdown/HTML 链接里会导致截断或解析异常的字符
+		.replace(/[()[\]{}'!^`]/g, "")
+		// 空白统一换成连字符（链接里必须转义，不如直接换掉）
+		.replace(/\s+/g, "-")
+		.replace(/-{2,}/g, "-")
+		.replace(/^[-.]+|[-.]+$/g, "")
+		.slice(0, 60)
+		.trim();
+	return cleaned.length > 0 ? `${cleaned}.assets` : "assets";
+}
+
+/** 链接目标里必须转义的字符 → 百分号编码 */
+const LINK_ESCAPES: Record<string, string> = {
+	"%": "%25",
+	" ": "%20",
+	"(": "%28",
+	")": "%29",
+	"<": "%3C",
+	">": "%3E",
+	'"': "%22",
+	"'": "%27",
+	"`": "%60",
+	"[": "%5B",
+	"]": "%5D",
+	"{": "%7B",
+	"}": "%7D",
+	"|": "%7C",
+	"^": "%5E",
+	"#": "%23",
+	"?": "%3F",
+	"&": "%26",
+};
+
+/** 对写进 Markdown/HTML 的链接目标做百分号编码（中文等非 ASCII 保持原样） */
+export function encodeLinkUrl(path: string): string {
+	let out = "";
+	for (const ch of path) out += LINK_ESCAPES[ch] ?? ch;
+	return out;
+}
+
 /** 从 typed array 拷贝出独立的 ArrayBuffer（createBinary 需要） */
 export function toArrayBuffer(data: Uint8Array): ArrayBuffer {
 	return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;

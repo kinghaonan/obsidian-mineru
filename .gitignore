@@ -9,6 +9,11 @@ main.js.map
 # 含真实 API Token 的用户数据，严禁入库
 data.json
 
+# 本仓库常被直接当作 Obsidian 库使用，转换产物与附件不入库
+MinerU转换/
+*.assets/
+翻译/
+
 # 复刻参照用的打包产物备份
 main.js.orig
 

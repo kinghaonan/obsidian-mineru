@@ -78,6 +78,17 @@ test("imagesToCenteredHtml 不显示文件名时省略 strong", () => {
 	assert.equal(out, '<div style="text-align:center"><img src="1.jpg" alt="a" width="50%"/></div>');
 });
 
+test("rewriteImageLinks 识别带空格的 <...> 写法", () => {
+	const map = new Map([["a b.jpg", "文稿.assets/a%20b.jpg"]]);
+	const out = rewriteImageLinks("![x](<a b.jpg>)", map);
+	assert.equal(out, "![x](文稿.assets/a%20b.jpg)");
+});
+
+test("rewriteImageLinks 未命中的链接原样保留", () => {
+	const md = "![远程](https://example.com/a.png)\n\n![本地](images/zzz.jpg)";
+	assert.equal(rewriteImageLinks(md, new Map([["images/q.jpg", "x.jpg"]])), md);
+});
+
 test("imagesToCenteredHtml 转义 alt 引号并解码文件名", () => {
 	const out = imagesToCenteredHtml('![a"b](文稿.assets/x%20y&z.png)', 50, true);
 	assert.ok(out.includes('alt="a&quot;b"'));

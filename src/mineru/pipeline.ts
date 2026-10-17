@@ -2,6 +2,8 @@ import { App, normalizePath, TFile } from "obsidian";
 import { MAX_FILE_SIZE, stateLabel } from "../constants";
 import {
 	asciiSlug,
+	assetFolderName,
+	encodeLinkUrl,
 	extractZip,
 	ensureFolderLevels,
 	relativePath,
@@ -385,17 +387,22 @@ export class ConversionPipeline {
 		let imageCount = 0;
 
 		if (options.downloadImages && contents.images.length > 0) {
+			// 目录名要做链接安全化：文档名里的空格/括号会让 ![](路径) 在 Markdown 中截断
+			const defaultFolder = assetFolderName(basename);
 			const imageDir = normalizePath(
-				options.imageFolder.trim() ? options.imageFolder : `${outDir}/${safeName}.assets`,
+				options.imageFolder.trim() ? options.imageFolder : `${outDir}/${defaultFolder}`,
 			);
 			await ensureFolderLevels(vault, imageDir);
 			const urlMap = new Map<string, string>();
 			for (const image of contents.images) {
-				const binPath = normalizePath(`${imageDir}/${image.relPath}`);
+				const relName = image.relPath.replace(/\\/g, "/");
+				const binPath = normalizePath(`${imageDir}/${relName}`);
 				await this.writeBinary(binPath, toArrayBuffer(image.data));
-				const relative = relativePath(outDir, binPath);
+				// 链接目标做百分号编码，空格/括号等在 Markdown 里才不会被截断
+				const relative = encodeLinkUrl(relativePath(outDir, binPath));
 				urlMap.set(image.relPath, relative);
 				urlMap.set(`images/${image.relPath}`, relative);
+				urlMap.set(relName, relative);
 				imageCount++;
 			}
 			markdown = rewriteImageLinks(markdown, urlMap);

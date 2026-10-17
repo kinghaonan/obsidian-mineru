@@ -118,7 +118,7 @@ export class ConversionWizard extends Modal {
 
 		const imageFolderSetting = new Setting(this.contentEl)
 			.setName("图片保存文件夹")
-			.setDesc("留空则自动保存为：{输出文件夹}/{文件名}.assets");
+			.setDesc("留空则自动保存为：{输出文件夹}/{文件名}.assets（空格转 -、去掉括号，保证链接可用）");
 		this.imageFolderInput = new TextComponent(imageFolderSetting.controlEl)
 			.setPlaceholder("留空自动生成")
 			.setValue(settings.imageFolder);

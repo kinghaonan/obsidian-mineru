@@ -3,6 +3,8 @@ import { test } from "node:test";
 import JSZip from "jszip";
 import {
 	asciiSlug,
+	assetFolderName,
+	encodeLinkUrl,
 	ensureFolderLevels,
 	extractZip,
 	isConvertiblePath,
@@ -45,6 +47,34 @@ test("relativePath 计算库内相对路径", () => {
 	assert.equal(relativePath("a/b", "c/d.png"), "../../c/d.png");
 	assert.equal(relativePath("x", "x"), ".");
 	assert.equal(relativePath("MinerU转换/文稿.assets", "MinerU转换/a.png"), "../a.png");
+});
+
+test("assetFolderName 剔除会让链接截断的字符", () => {
+	// 真实案例：Analytical Mechanics of Space Systems (Aiaa Education)
+	assert.equal(
+		assetFolderName("Analytical Mechanics of Space Systems (Aiaa Education)"),
+		"Analytical-Mechanics-of-Space-Systems-Aiaa-Education.assets",
+	);
+	assert.equal(assetFolderName("报告"), "报告.assets");
+	assert.equal(assetFolderName("a/b:c"), "abc.assets");
+	assert.equal(assetFolderName("   "), "assets");
+	assert.equal(assetFolderName("(x)"), "x.assets");
+});
+
+test("assetFolderName 限制长度", () => {
+	const name = assetFolderName("n".repeat(200));
+	assert.equal(name.length, ".assets".length + 60);
+	assert.ok(!name.includes(" "));
+});
+
+test("encodeLinkUrl 转义会破坏链接的字符", () => {
+	assert.equal(
+		encodeLinkUrl("Analytical Mechanics (Aiaa).assets/1.jpg"),
+		"Analytical%20Mechanics%20%28Aiaa%29.assets/1.jpg",
+	);
+	assert.equal(encodeLinkUrl("图/1.jpg"), "图/1.jpg", "中文与斜杠保持原样");
+	assert.equal(encodeLinkUrl("a%b"), "a%25b", "百分号自身需转义");
+	assert.equal(encodeLinkUrl('a"b#c?d'), "a%22b%23c%3Fd");
 });
 
 test("toArrayBuffer 返回独立缓冲", () => {

@@ -119,6 +119,42 @@ test("convertFiles 汇总 skipped 计数", async () => {
 	assert.equal(report.results[0].skipped, true);
 });
 
+/* --------------------------------------------- 图片路径与链接可用性 */
+
+test("文档名含空格括号时图片目录与链接都可用", async () => {
+	const vault = createVault();
+	vault.seed("Analytical Mechanics of Space Systems (Aiaa Education).pdf", "x");
+	const pipeline = pipelineFor(vault, fakeClient());
+	const written = await pipeline.writeResult(
+		vault.getFiles()[0],
+		"Analytical Mechanics of Space Systems (Aiaa Education)",
+		{ markdown: "![](images/a.jpg)", images: [{ relPath: "a.jpg", data: new Uint8Array([1]) }], extras: [] },
+		OPTIONS,
+	);
+
+	const folder = "MinerU转换/Analytical-Mechanics-of-Space-Systems-Aiaa-Education.assets";
+	assert.ok(vault.entries.has(`${folder}/a.jpg`), "图片应落在链接安全的目录里");
+	const md = await vault.read(vault.getAbstractFileByPath(written.outputPath) as never);
+	assert.equal(md, "![](Analytical-Mechanics-of-Space-Systems-Aiaa-Education.assets/a.jpg)");
+	assert.ok(!md.includes(" "), "链接里不能出现裸空格");
+});
+
+test("自定义图片目录含空格时链接会被编码", async () => {
+	const vault = createVault();
+	vault.seed("a.pdf", "x");
+	const pipeline = pipelineFor(vault, fakeClient());
+	const written = await pipeline.writeResult(
+		vault.getFiles()[0],
+		"文档",
+		{ markdown: "![](images/a.jpg)", images: [{ relPath: "a.jpg", data: new Uint8Array([1]) }], extras: [] },
+		{ ...OPTIONS, imageFolder: "附件 图" },
+	);
+	const md = await vault.read(vault.getAbstractFileByPath(written.outputPath) as never);
+	// 相对路径回退到上一级；中文保持原样，空格编码为 %20
+	assert.equal(md, "![](../附件%20图/a.jpg)");
+	assert.ok(vault.entries.has("附件 图/a.jpg"), "磁盘上的目录名保持用户填写的原样");
+});
+
 /* ------------------------------------------------ 大文件切分合并 */
 
 test("大文件 PDF 自动切分、上传并按顺序合并", async () => {
