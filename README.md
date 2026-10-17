@@ -52,6 +52,53 @@
    - **MinerU：重试上次失败的转换**
    - **MinerU：打开进度面板**
 
+## 部署到 Obsidian
+
+图注命名、分片合并、进度面板等**全部功能都在插件里**，转换新 PDF 时自动生效，无需额外配置
+（三个图注开关默认全开，可在 设置 → 图注识别 中调整）。
+
+### 更新插件
+
+```bash
+npm install
+npm run build          # 产出 main.js（约 610KB，含 pdf-lib）
+```
+
+把以下三个文件拷贝到 `<你的库>/.obsidian/plugins/obsidian-mineru/`：
+
+| 文件 | 说明 |
+|---|---|
+| `main.js` | 必需，插件代码 |
+| `manifest.json` | 必需，插件清单 |
+| `styles.css` | 必需，图注等样式 |
+
+然后在 Obsidian 中 **设置 → 第三方插件 → 关闭再开启 obsidian-mineru**（或直接重启 Obsidian）。
+
+> `data.json`（含你的 Token 与设置）不在拷贝范围内，覆盖它会丢失配置。
+
+### 升级已转换的旧产物（不消耗 API 额度）
+
+旧版本转换出的图片是哈希名，可用脚本在**本地**升级为图注命名，无需重新上传 PDF：
+
+```bash
+# 1. 先预览，不改动任何文件
+node --experimental-strip-types scripts/rename-by-caption.mjs "<库内>/MinerU转换/某文档.md" --dry
+
+# 2. 确认无误后执行（重命名图片 + 同步更新链接）
+node --experimental-strip-types scripts/rename-by-caption.mjs "<库内>/MinerU转换/某文档.md"
+```
+
+实测 317 张图的文档：识别图注 236 + 子图 37 = **273 张可重命名**，0 跳过、0 缺失。
+
+其他维护脚本：
+
+| 脚本 | 用途 |
+|---|---|
+| `scripts/rename-by-caption.mjs` | 按图注重命名已转换产物的图片 |
+| `scripts/fix-assets-links.mjs` | 修复文档名含空格/括号导致的图片链接截断 |
+| `scripts/analyze-captions.mjs` | 统计某文档的图注可识别率 |
+| `scripts/verify-captions.mjs` | 验证识别结果与误删风险 |
+
 ## 项目结构
 
 ```
